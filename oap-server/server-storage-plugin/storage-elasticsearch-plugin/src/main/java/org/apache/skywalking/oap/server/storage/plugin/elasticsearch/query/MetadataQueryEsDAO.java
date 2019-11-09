@@ -29,7 +29,6 @@ import java.util.Map;
 import org.apache.skywalking.oap.server.core.query.entity.Attribute;
 import org.apache.skywalking.oap.server.core.query.entity.Database;
 import org.apache.skywalking.oap.server.core.query.entity.Endpoint;
-import org.apache.skywalking.oap.server.core.query.entity.Language;
 import org.apache.skywalking.oap.server.core.query.entity.LanguageTrans;
 import org.apache.skywalking.oap.server.core.query.entity.Service;
 import org.apache.skywalking.oap.server.core.query.entity.ServiceInstance;
@@ -85,7 +84,7 @@ public class MetadataQueryEsDAO extends EsDAO implements IMetadataQueryDAO {
         return (int)response.getHits().getTotalHits();
     }
 
-    @Override public int numOfEndpoint(long startTimestamp, long endTimestamp) throws IOException {
+    @Override public int numOfEndpoint() throws IOException {
         SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
 
         BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
@@ -100,7 +99,7 @@ public class MetadataQueryEsDAO extends EsDAO implements IMetadataQueryDAO {
     }
 
     @Override
-    public int numOfConjectural(long startTimestamp, long endTimestamp, int nodeTypeValue) throws IOException {
+    public int numOfConjectural(int nodeTypeValue) throws IOException {
         SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
 
         sourceBuilder.query(QueryBuilders.termQuery(ServiceInventory.NODE_TYPE, nodeTypeValue));
@@ -246,6 +245,7 @@ public class MetadataQueryEsDAO extends EsDAO implements IMetadataQueryDAO {
             ServiceInstance serviceInstance = new ServiceInstance();
             serviceInstance.setId(String.valueOf(sourceAsMap.get(ServiceInstanceInventory.SEQUENCE)));
             serviceInstance.setName((String)sourceAsMap.get(ServiceInstanceInventory.NAME));
+            serviceInstance.setInstanceUUID((String)sourceAsMap.get(ServiceInstanceInventory.INSTANCE_UUID));
 
             String propertiesString = (String)sourceAsMap.get(ServiceInstanceInventory.PROPERTIES);
             if (!Strings.isNullOrEmpty(propertiesString)) {
@@ -255,28 +255,21 @@ public class MetadataQueryEsDAO extends EsDAO implements IMetadataQueryDAO {
                     String value = property.getValue().getAsString();
                     if (key.equals(LANGUAGE)) {
                         serviceInstance.setLanguage(LanguageTrans.INSTANCE.value(value));
-                    }
-
-                    if (key.equals(OS_NAME)) {
+                    } else if (key.equals(OS_NAME)) {
                         serviceInstance.getAttributes().add(new Attribute(OS_NAME, value));
-                    }
-                    if (key.equals(HOST_NAME)) {
+                    } else if (key.equals(HOST_NAME)) {
                         serviceInstance.getAttributes().add(new Attribute(HOST_NAME, value));
-                    }
-                    if (key.equals(PROCESS_NO)) {
+                    } else if (key.equals(PROCESS_NO)) {
                         serviceInstance.getAttributes().add(new Attribute(PROCESS_NO, value));
-                    }
-                    if (key.equals(IPV4S)) {
+                    } else if (key.equals(IPV4S)) {
                         List<String> ipv4s = ServiceInstanceInventory.PropertyUtil.ipv4sDeserialize(properties.get(IPV4S).getAsString());
                         for (String ipv4 : ipv4s) {
                             serviceInstance.getAttributes().add(new Attribute(ServiceInstanceInventory.PropertyUtil.IPV4S, ipv4));
                         }
+                    } else {
+                        serviceInstance.getAttributes().add(new Attribute(key, value));
                     }
-
-                    serviceInstance.getAttributes().add(new Attribute(key, value));
                 }
-            } else {
-                serviceInstance.setLanguage(Language.UNKNOWN);
             }
 
             serviceInstances.add(serviceInstance);

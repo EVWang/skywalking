@@ -132,6 +132,10 @@ public class Config {
          * Collector skywalking trace receiver service addresses.
          */
         public static String BACKEND_SERVICE = "";
+        /**
+         * How long grpc client will timeout in sending data to upstream.
+         */
+        public static int GRPC_UPSTREAM_TIMEOUT = 30;
     }
 
     public static class Jvm {
@@ -174,6 +178,12 @@ public class Config {
          * file.
          */
         public static int MAX_FILE_SIZE = 300 * 1024 * 1024;
+
+        /**
+         * The max history log files. When rollover happened, if log files exceed this number,
+         * then the oldest file will be delete. Negative or zero means off, by default.
+         */
+        public static int MAX_HISTORY_FILES = -1;
 
         /**
          * The log level. Default is debug.
@@ -254,6 +264,22 @@ public class Config {
              * collected.
              */
             public static boolean TRACE_SQL_PARAMETERS = false;
+            /**
+             * For the sake of performance, SkyWalking won't save the entire parameters string into the tag, but only
+             * the first {@code SQL_PARAMETERS_MAX_LENGTH} characters.
+             *
+             * Set a negative number to save the complete parameter string to the tag.
+             */
+            public static int SQL_PARAMETERS_MAX_LENGTH = 512;
+        }
+
+        public static class POSTGRESQL {
+            /**
+             * If set to true, the parameters of the sql (typically {@link java.sql.PreparedStatement}) would be
+             * collected.
+             */
+            public static boolean TRACE_SQL_PARAMETERS = false;
+
             /**
              * For the sake of performance, SkyWalking won't save the entire parameters string into the tag, but only
              * the first {@code SQL_PARAMETERS_MAX_LENGTH} characters.
