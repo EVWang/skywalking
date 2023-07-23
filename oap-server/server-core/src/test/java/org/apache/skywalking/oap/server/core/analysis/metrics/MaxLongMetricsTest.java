@@ -19,11 +19,12 @@
 package org.apache.skywalking.oap.server.core.analysis.metrics;
 
 import org.apache.skywalking.oap.server.core.remote.grpc.proto.RemoteData;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.core.storage.StorageID;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 /**
- * @author liuhaoyang
+ *
  **/
 public class MaxLongMetricsTest {
 
@@ -34,7 +35,7 @@ public class MaxLongMetricsTest {
         impl.combine(5);
         impl.combine(20);
         impl.calculate();
-        Assert.assertEquals(20, impl.getValue());
+        Assertions.assertEquals(20, impl.getValue());
     }
 
     @Test
@@ -44,40 +45,42 @@ public class MaxLongMetricsTest {
         impl.combine(5);
 
         MaxLongMetricsImpl impl2 = new MaxLongMetricsImpl();
-        impl.combine(2);
-        impl.combine(6);
+        impl2.combine(2);
+        impl2.combine(6);
 
         impl.combine(impl2);
-        Assert.assertEquals(10, impl.getValue());
+        Assertions.assertEquals(10, impl.getValue());
     }
 
     public class MaxLongMetricsImpl extends MaxLongMetrics {
 
-        @Override public String id() {
+        @Override
+        protected StorageID id0() {
             return null;
         }
 
-        @Override public Metrics toHour() {
+        @Override
+        public Metrics toHour() {
             return null;
         }
 
-        @Override public Metrics toDay() {
+        @Override
+        public Metrics toDay() {
             return null;
         }
 
-        @Override public Metrics toMonth() {
-            return null;
-        }
-
-        @Override public int remoteHashCode() {
+        @Override
+        public int remoteHashCode() {
             return 0;
         }
 
-        @Override public void deserialize(RemoteData remoteData) {
+        @Override
+        public void deserialize(RemoteData remoteData) {
 
         }
 
-        @Override public RemoteData.Builder serialize() {
+        @Override
+        public RemoteData.Builder serialize() {
             return null;
         }
     }

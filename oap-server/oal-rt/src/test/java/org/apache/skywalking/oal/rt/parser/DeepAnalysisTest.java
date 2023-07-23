@@ -18,26 +18,33 @@
 
 package org.apache.skywalking.oal.rt.parser;
 
-import java.io.IOException;
-import java.util.List;
+import org.apache.skywalking.oap.server.core.analysis.metrics.expression.BooleanMatch;
+import org.apache.skywalking.oap.server.core.analysis.metrics.expression.BooleanNotEqualMatch;
+import org.apache.skywalking.oap.server.core.analysis.metrics.expression.NotEqualMatch;
+import org.apache.skywalking.oap.server.core.analysis.metrics.expression.StringMatch;
 import org.apache.skywalking.oap.server.core.annotation.AnnotationScan;
 import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.core.storage.StorageException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class DeepAnalysisTest {
-    @BeforeClass
-    public static void init() throws IOException {
+    @BeforeAll
+    public static void init() throws IOException, StorageException {
         AnnotationScan scopeScan = new AnnotationScan();
         scopeScan.registerListener(new DefaultScopeDefine.Listener());
         scopeScan.scan();
-
-        MetricsHolder.init();
     }
 
-    @AfterClass
+    @AfterAll
     public static void clear() {
         DefaultScopeDefine.reset();
     }
@@ -45,84 +52,125 @@ public class DeepAnalysisTest {
     @Test
     public void testServiceAnalysis() {
         AnalysisResult result = new AnalysisResult();
-        result.setSourceName("Service");
-        result.setPackageName("service.serviceavg");
-        result.setSourceAttribute("latency");
+        result.getFrom().setSourceName("Service");
+        result.getFrom().getSourceAttribute().add("latency");
         result.setMetricsName("ServiceAvg");
-        result.setAggregationFunctionName("longAvg");
+        result.getAggregationFuncStmt().setAggregationFunctionName("longAvg");
 
         DeepAnalysis analysis = new DeepAnalysis();
         result = analysis.analysis(result);
 
         EntryMethod method = result.getEntryMethod();
-        Assert.assertEquals("combine", method.getMethodName());
-        Assert.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
-        Assert.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
+        Assertions.assertEquals("combine", method.getMethodName());
+        Assertions.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
+        Assertions.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
 
         List<SourceColumn> source = result.getFieldsFromSource();
-        Assert.assertEquals(1, source.size());
+        Assertions.assertEquals(1, source.size());
 
         List<DataColumn> persistentFields = result.getPersistentFields();
-        Assert.assertEquals(4, persistentFields.size());
+        Assertions.assertEquals(4, persistentFields.size());
     }
 
     @Test
     public void testEndpointAnalysis() {
         AnalysisResult result = new AnalysisResult();
-        result.setSourceName("Endpoint");
-        result.setPackageName("endpoint.endpointavg");
-        result.setSourceAttribute("latency");
+        result.getFrom().setSourceName("Endpoint");
+        result.getFrom().getSourceAttribute().add("latency");
         result.setMetricsName("EndpointAvg");
-        result.setAggregationFunctionName("longAvg");
+        result.getAggregationFuncStmt().setAggregationFunctionName("longAvg");
 
         DeepAnalysis analysis = new DeepAnalysis();
         result = analysis.analysis(result);
 
         EntryMethod method = result.getEntryMethod();
-        Assert.assertEquals("combine", method.getMethodName());
-        Assert.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
-        Assert.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
+        Assertions.assertEquals("combine", method.getMethodName());
+        Assertions.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
+        Assertions.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
 
         List<SourceColumn> source = result.getFieldsFromSource();
-        Assert.assertEquals(3, source.size());
+        Assertions.assertEquals(2, source.size());
 
         List<DataColumn> persistentFields = result.getPersistentFields();
-        Assert.assertEquals(4, persistentFields.size());
+        Assertions.assertEquals(4, persistentFields.size());
     }
 
     @Test
     public void testFilterAnalysis() {
         AnalysisResult result = new AnalysisResult();
-        result.setSourceName("Endpoint");
-        result.setPackageName("endpoint.endpointavg");
-        result.setSourceAttribute("latency");
+        result.getFrom().setSourceName("Endpoint");
+        result.getFrom().getSourceAttribute().add("latency");
         result.setMetricsName("EndpointAvg");
-        result.setAggregationFunctionName("longAvg");
+        result.getAggregationFuncStmt().setAggregationFunctionName("longAvg");
         ConditionExpression expression = new ConditionExpression();
         expression.setExpressionType("stringMatch");
-        expression.setAttribute("name");
+        expression.getAttributes().add("name");
         expression.setValue("\"/service/prod/save\"");
-        result.addFilterExpressionsParserResult(expression);
+        result.getFilters().addFilterExpressionsParserResult(expression);
 
         DeepAnalysis analysis = new DeepAnalysis();
         result = analysis.analysis(result);
 
         EntryMethod method = result.getEntryMethod();
-        Assert.assertEquals("combine", method.getMethodName());
-        Assert.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
-        Assert.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
+        Assertions.assertEquals("combine", method.getMethodName());
+        Assertions.assertEquals("(long)(source.getLatency())", method.getArgsExpressions().get(0));
+        Assertions.assertEquals("(long)(1)", method.getArgsExpressions().get(1));
 
         List<SourceColumn> source = result.getFieldsFromSource();
-        Assert.assertEquals(3, source.size());
+        Assertions.assertEquals(2, source.size());
 
         List<DataColumn> persistentFields = result.getPersistentFields();
-        Assert.assertEquals(4, persistentFields.size());
+        Assertions.assertEquals(4, persistentFields.size());
 
-        List<Expression> filterExpressions = result.getFilterExpressions();
-        Assert.assertEquals(1, filterExpressions.size());
+        List<Expression> filterExpressions = result.getFilters().getFilterExpressions();
+        Assertions.assertEquals(1, filterExpressions.size());
         Expression filterExpression = filterExpressions.get(0);
-        Assert.assertEquals("EqualMatch", filterExpression.getExpressionObject());
-        Assert.assertEquals("source.getName()", filterExpression.getLeft());
-        Assert.assertEquals("\"/service/prod/save\"", filterExpression.getRight());
+        Assertions.assertEquals(StringMatch.class.getName(), filterExpression.getExpressionObject());
+        Assertions.assertEquals("source.getName()", filterExpression.getLeft());
+        Assertions.assertEquals("\"/service/prod/save\"", filterExpression.getRight());
+    }
+
+    @Test
+    public void shouldUseCorrectMatcher() {
+
+        AnalysisResult result = new AnalysisResult();
+        result.getFrom().setSourceName("Endpoint");
+        result.getFrom().getSourceAttribute().add("latency");
+        result.setMetricsName("EndpointAvg");
+        result.getAggregationFuncStmt().setAggregationFunctionName("longAvg");
+
+        DeepAnalysis analysis = new DeepAnalysis();
+
+        result.getFilters().setFilterExpressions(null);
+        result.getFilters().setFilterExpressionsParserResult(null);
+        result.getFilters().addFilterExpressionsParserResult(new ConditionExpression("booleanMatch", "valid", ""));
+        result = analysis.analysis(result);
+        assertTrue(result.getFilters().getFilterExpressions().size() > 0);
+        assertEquals(BooleanMatch.class.getName(), result.getFilters().getFilterExpressions().get(0).getExpressionObject());
+        assertEquals("source.isValid()", result.getFilters().getFilterExpressions().get(0).getLeft());
+
+        result.getFilters().setFilterExpressions(null);
+        result.getFilters().setFilterExpressionsParserResult(null);
+        result.getFilters().addFilterExpressionsParserResult(new ConditionExpression("stringMatch", "type", ""));
+        result = analysis.analysis(result);
+        assertTrue(result.getFilters().getFilterExpressions().size() > 0);
+        assertEquals(StringMatch.class.getName(), result.getFilters().getFilterExpressions().get(0).getExpressionObject());
+        assertEquals("source.getType()", result.getFilters().getFilterExpressions().get(0).getLeft());
+
+        result.getFilters().setFilterExpressions(null);
+        result.getFilters().setFilterExpressionsParserResult(null);
+        result.getFilters().addFilterExpressionsParserResult(new ConditionExpression("notEqualMatch", "type", ""));
+        result = analysis.analysis(result);
+        assertTrue(result.getFilters().getFilterExpressions().size() > 0);
+        assertEquals(NotEqualMatch.class.getName(), result.getFilters().getFilterExpressions().get(0).getExpressionObject());
+        assertEquals("source.getType()", result.getFilters().getFilterExpressions().get(0).getLeft());
+
+        result.getFilters().setFilterExpressions(null);
+        result.getFilters().setFilterExpressionsParserResult(null);
+        result.getFilters().addFilterExpressionsParserResult(new ConditionExpression("booleanNotEqualMatch", "type", ""));
+        result = analysis.analysis(result);
+        assertTrue(result.getFilters().getFilterExpressions().size() > 0);
+        assertEquals(BooleanNotEqualMatch.class.getName(), result.getFilters().getFilterExpressions().get(0).getExpressionObject());
+        assertEquals("source.isType()", result.getFilters().getFilterExpressions().get(0).getLeft());
     }
 }

@@ -19,48 +19,54 @@
 package org.apache.skywalking.oap.server.exporter.provider.grpc;
 
 import org.apache.skywalking.oap.server.core.CoreModule;
-import org.apache.skywalking.oap.server.core.cache.EndpointInventoryCache;
-import org.apache.skywalking.oap.server.core.cache.ServiceInstanceInventoryCache;
-import org.apache.skywalking.oap.server.core.cache.ServiceInventoryCache;
 import org.apache.skywalking.oap.server.core.exporter.ExporterModule;
-import org.apache.skywalking.oap.server.library.module.*;
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.exporter.provider.ExporterProvider;
+import org.apache.skywalking.oap.server.exporter.provider.ExporterSetting;
+import org.apache.skywalking.oap.server.library.module.ModuleManager;
+import org.apache.skywalking.oap.server.library.module.ModuleProvider;
+import org.apache.skywalking.oap.server.library.module.ModuleProviderHolder;
+import org.apache.skywalking.oap.server.library.module.ModuleServiceHolder;
+import org.apache.skywalking.oap.server.library.module.ModuleStartException;
+import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.powermock.reflect.Whitebox;
 
 import java.util.Iterator;
 import java.util.ServiceLoader;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-/**
- * Created by dengming, 2019.04.20
- */
-@Ignore
+@Disabled
 public class GRPCExporterProviderTest {
 
     private ServiceLoader<ModuleProvider> serviceLoader = ServiceLoader.load(ModuleProvider.class);
     private ModuleProvider grpcExporterProvider;
 
-    @Before
+    @BeforeEach
     public void setUp() throws ModuleStartException {
         Iterator<ModuleProvider> moduleProviderIterator = serviceLoader.iterator();
         assertTrue(moduleProviderIterator.hasNext());
 
         grpcExporterProvider = moduleProviderIterator.next();
-        assertTrue(grpcExporterProvider instanceof GRPCExporterProvider);
+        assertTrue(grpcExporterProvider instanceof ExporterProvider);
 
-        GRPCExporterSetting config = (GRPCExporterSetting) grpcExporterProvider.createConfigBeanIfAbsent();
+        ExporterSetting config = (ExporterSetting) grpcExporterProvider.newConfigCreator();
         assertNotNull(config);
-        assertNull(config.getTargetHost());
-        assertEquals(0, config.getTargetPort());
+        assertNull(config.getGRPCTargetHost());
+        assertEquals(0, config.getGRPCTargetPort());
         assertEquals(20000, config.getBufferChannelSize());
         assertEquals(2, config.getBufferChannelNum());
 
         //for test
-        config.setTargetHost("localhost");
+        config.setGRPCTargetHost("localhost");
 
         grpcExporterProvider.prepare();
 
@@ -69,7 +75,7 @@ public class GRPCExporterProviderTest {
 
     @Test
     public void name() {
-        assertEquals("grpc", grpcExporterProvider.name());
+        assertEquals("default", grpcExporterProvider.name());
     }
 
     @Test
@@ -77,28 +83,22 @@ public class GRPCExporterProviderTest {
         assertEquals(ExporterModule.class, grpcExporterProvider.module());
     }
 
-
     @Test
     public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
-        GRPCExporter exporter = mock(GRPCExporter.class);
+        GRPCMetricsExporter exporter = mock(GRPCMetricsExporter.class);
 
         ModuleManager manager = mock(ModuleManager.class);
         ModuleProviderHolder providerHolder = mock(ModuleProviderHolder.class);
-
 
         ModuleServiceHolder serviceHolder = mock(ModuleServiceHolder.class);
 
         when(manager.find(CoreModule.NAME)).thenReturn(providerHolder);
         when(providerHolder.provider()).thenReturn(serviceHolder);
 
-        when(serviceHolder.getService(ServiceInventoryCache.class)).thenReturn(null);
-        when(serviceHolder.getService(ServiceInstanceInventoryCache.class)).thenReturn(null);
-        when(serviceHolder.getService(EndpointInventoryCache.class)).thenReturn(null);
-
-        doNothing().when(exporter).initSubscriptionList();
+        doNothing().when(exporter).fetchSubscriptionList();
 
         grpcExporterProvider.setManager(manager);
-        Whitebox.setInternalState(grpcExporterProvider, "exporter", exporter);
+        Whitebox.setInternalState(grpcExporterProvider, "grpcMetricsExporter", exporter);
         grpcExporterProvider.notifyAfterCompleted();
     }
 

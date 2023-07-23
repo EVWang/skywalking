@@ -21,11 +21,14 @@ package org.apache.skywalking.oap.server.cluster.plugin.consul;
 import com.google.common.net.HostAndPort;
 import com.orbitz.consul.Consul;
 import com.orbitz.consul.ConsulException;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.skywalking.oap.server.core.CoreModule;
+import org.apache.skywalking.oap.server.core.cluster.ClusterCoordinator;
 import org.apache.skywalking.oap.server.core.cluster.ClusterModule;
 import org.apache.skywalking.oap.server.core.cluster.ClusterNodesQuery;
 import org.apache.skywalking.oap.server.core.cluster.ClusterRegister;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleProvider;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
@@ -33,37 +36,41 @@ import org.apache.skywalking.oap.server.library.util.Address;
 import org.apache.skywalking.oap.server.library.util.ConnectStringParseException;
 import org.apache.skywalking.oap.server.library.util.ConnectUtils;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * Use consul to manage all service instances in SkyWalking cluster.
- *
- * @author peng-yongsheng
  */
 public class ClusterModuleConsulProvider extends ModuleProvider {
 
-    private final ClusterModuleConsulConfig config;
+    private ClusterModuleConsulConfig config;
     private Consul client;
 
-    public ClusterModuleConsulProvider() {
-        super();
-        this.config = new ClusterModuleConsulConfig();
-    }
-
-    @Override public String name() {
+    @Override
+    public String name() {
         return "consul";
     }
 
-    @Override public Class module() {
+    @Override
+    public Class module() {
         return ClusterModule.class;
     }
 
-    @Override public ModuleConfig createConfigBeanIfAbsent() {
-        return config;
+    @Override
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<ClusterModuleConsulConfig>() {
+            @Override
+            public Class type() {
+                return ClusterModuleConsulConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final ClusterModuleConsulConfig initialized) {
+                config = initialized;
+            }
+        };
     }
 
-    @Override public void prepare() throws ServiceNotProvidedException, ModuleStartException {
+    @Override
+    public void prepare() throws ServiceNotProvidedException, ModuleStartException {
         try {
             List<Address> addressList = ConnectUtils.parse(config.getHostPort());
 
@@ -73,8 +80,12 @@ public class ClusterModuleConsulProvider extends ModuleProvider {
             }
 
             Consul.Builder consulBuilder = Consul.builder()
-//                    we should set this value or it will be blocked forever
-                    .withConnectTimeoutMillis(3000);
+                                                 //                    we should set this value or it will be blocked forever
+                                                 .withConnectTimeoutMillis(3000);
+
+            if (StringUtils.isNotEmpty(config.getAclToken())) {
+                consulBuilder.withAclToken(config.getAclToken());
+            }
 
             if (hostAndPorts.size() > 1) {
                 client = consulBuilder.withMultipleHostAndPort(hostAndPorts, 5000).build();
@@ -84,16 +95,18 @@ public class ClusterModuleConsulProvider extends ModuleProvider {
         } catch (ConnectStringParseException | ConsulException e) {
             throw new ModuleStartException(e.getMessage(), e);
         }
-
-        ConsulCoordinator coordinator = new ConsulCoordinator(config, client);
+        ConsulCoordinator coordinator = new ConsulCoordinator(getManager(), config, client);
         this.registerServiceImplementation(ClusterRegister.class, coordinator);
         this.registerServiceImplementation(ClusterNodesQuery.class, coordinator);
+        this.registerServiceImplementation(ClusterCoordinator.class, coordinator);
     }
 
-    @Override public void start() {
+    @Override
+    public void start() {
     }
 
-    @Override public void notifyAfterCompleted() {
+    @Override
+    public void notifyAfterCompleted() {
     }
 
     @Override

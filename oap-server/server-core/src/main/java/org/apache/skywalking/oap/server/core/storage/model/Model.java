@@ -18,31 +18,37 @@
 
 package org.apache.skywalking.oap.server.core.storage.model;
 
-import java.util.List;
+import lombok.EqualsAndHashCode;
 import lombok.Getter;
-import org.apache.skywalking.oap.server.core.analysis.Downsampling;
+import lombok.RequiredArgsConstructor;
+import org.apache.skywalking.oap.server.core.analysis.DownSampling;
+import org.apache.skywalking.oap.server.core.analysis.metrics.Metrics;
+import org.apache.skywalking.oap.server.core.analysis.record.Record;
+
+import java.util.List;
 
 /**
- * @author peng-yongsheng
+ * The model definition of a logic entity.
  */
 @Getter
+@EqualsAndHashCode
+@RequiredArgsConstructor
 public class Model {
-
     private final String name;
-    private final boolean capableOfTimeSeries;
-    private final Downsampling downsampling;
-    private final boolean deleteHistory;
     private final List<ModelColumn> columns;
     private final int scopeId;
-    private final boolean record;
+    private final DownSampling downsampling;
+    private final boolean superDataset;
+    private final Class<?> streamClass;
+    private final boolean timeRelativeID;
+    private final SQLDatabaseModelExtension sqlDBModelExtension;
+    private final BanyanDBModelExtension banyanDBModelExtension;
+    private final ElasticSearchModelExtension elasticSearchModelExtension;
 
-    public Model(String name, List<ModelColumn> columns, boolean capableOfTimeSeries, boolean deleteHistory, int scopeId, Downsampling downsampling, boolean record) {
-        this.columns = columns;
-        this.capableOfTimeSeries = capableOfTimeSeries;
-        this.downsampling = downsampling;
-        this.deleteHistory = deleteHistory;
-        this.scopeId = scopeId;
-        this.name = ModelName.build(downsampling, name);
-        this.record = record;
-    }
+    @Getter(lazy = true)
+    private final boolean isMetric = Metrics.class.isAssignableFrom(getStreamClass());
+    @Getter(lazy = true)
+    private final boolean isRecord = Record.class.isAssignableFrom(getStreamClass());
+    @Getter(lazy = true)
+    private final boolean isTimeSeries = !DownSampling.None.equals(getDownsampling());
 }

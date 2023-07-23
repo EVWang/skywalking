@@ -17,8 +17,6 @@
 
 package org.apache.skywalking.oap.server.library.client.request;
 
-/**
- * @author peng-yongsheng
- */
 public interface InsertRequest extends PrepareRequest {
+    void onInsertCompleted();
 }

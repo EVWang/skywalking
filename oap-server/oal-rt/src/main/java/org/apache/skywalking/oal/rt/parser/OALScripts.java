@@ -18,8 +18,9 @@
 
 package org.apache.skywalking.oal.rt.parser;
 
-import java.util.*;
-import lombok.*;
+import java.util.ArrayList;
+import java.util.List;
+import lombok.Getter;
 
 @Getter
 public class OALScripts {
@@ -27,7 +28,7 @@ public class OALScripts {
     private DisableCollection disableCollection;
 
     public OALScripts() {
-        metricsStmts = new LinkedList<>();
+        metricsStmts = new ArrayList<>();
         disableCollection = new DisableCollection();
     }
 }

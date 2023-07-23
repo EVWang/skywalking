@@ -19,8 +19,13 @@
 package org.apache.skywalking.oap.server.core.storage;
 
 /**
- * @author peng-yongsheng
+ * Any persistent entity should be an implementation of this interface.
  */
 public interface StorageData {
-    String id();
+    String TIME_BUCKET = "time_bucket";
+
+    /**
+     * @return the unique id used in any storage option.
+     */
+    StorageID id();
 }

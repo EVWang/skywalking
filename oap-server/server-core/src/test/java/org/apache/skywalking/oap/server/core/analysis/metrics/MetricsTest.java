@@ -19,32 +19,23 @@
 package org.apache.skywalking.oap.server.core.analysis.metrics;
 
 import org.apache.skywalking.oap.server.core.remote.grpc.proto.RemoteData;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.core.storage.StorageID;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
-/**
- * @author wusheng
- */
 public class MetricsTest {
     @Test
     public void testTransferToTimeBucket() {
         MetricsMocker mocker = new MetricsMocker();
 
         mocker.setTimeBucket(201809120511L);
-        Assert.assertEquals(2018091205L, mocker.toTimeBucketInHour());
-        Assert.assertEquals(20180912L, mocker.toTimeBucketInDay());
-        Assert.assertEquals(201809L, mocker.toTimeBucketInMonth());
+        Assertions.assertEquals(2018091205L, mocker.toTimeBucketInHour());
+        Assertions.assertEquals(20180912L, mocker.toTimeBucketInDay());
 
         mocker = new MetricsMocker();
 
         mocker.setTimeBucket(2018091205L);
-        Assert.assertEquals(20180912L, mocker.toTimeBucketInDay());
-        Assert.assertEquals(201809L, mocker.toTimeBucketInMonth());
-
-        mocker = new MetricsMocker();
-
-        mocker.setTimeBucket(20180912L);
-        Assert.assertEquals(201809L, mocker.toTimeBucketInMonth());
+        Assertions.assertEquals(20180912L, mocker.toTimeBucketInDay());
     }
 
     @Test
@@ -58,7 +49,7 @@ public class MetricsTest {
         } catch (IllegalStateException e) {
             status = false;
         }
-        Assert.assertFalse(status);
+        Assertions.assertFalse(status);
 
         mocker = new MetricsMocker();
         mocker.setTimeBucket(20180912L);
@@ -69,7 +60,7 @@ public class MetricsTest {
         } catch (IllegalStateException e) {
             status = false;
         }
-        Assert.assertFalse(status);
+        Assertions.assertFalse(status);
 
         status = true;
         try {
@@ -77,44 +68,48 @@ public class MetricsTest {
         } catch (IllegalStateException e) {
             status = false;
         }
-        Assert.assertFalse(status);
+        Assertions.assertFalse(status);
     }
 
     public class MetricsMocker extends Metrics {
 
-        @Override public String id() {
+        @Override
+        protected StorageID id0() {
             return null;
         }
 
-        @Override public void combine(Metrics metrics) {
+        @Override
+        public boolean combine(Metrics metrics) {
+            return true;
+        }
+
+        @Override
+        public void calculate() {
 
         }
 
-        @Override public void calculate() {
-
-        }
-
-        @Override public Metrics toHour() {
+        @Override
+        public Metrics toHour() {
             return null;
         }
 
-        @Override public Metrics toDay() {
+        @Override
+        public Metrics toDay() {
             return null;
         }
 
-        @Override public Metrics toMonth() {
+        @Override
+        public void deserialize(RemoteData remoteData) {
+
+        }
+
+        @Override
+        public RemoteData.Builder serialize() {
             return null;
         }
 
-        @Override public void deserialize(RemoteData remoteData) {
-
-        }
-
-        @Override public RemoteData.Builder serialize() {
-            return null;
-        }
-
-        @Override public int remoteHashCode() {
+        @Override
+        public int remoteHashCode() {
             return 0;
         }
     }

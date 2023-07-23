@@ -20,32 +20,82 @@ package org.apache.skywalking.oap.server.core.storage.query;
 
 import java.io.IOException;
 import java.util.List;
-import org.apache.skywalking.oap.server.core.query.entity.*;
+
+import org.apache.skywalking.oap.server.core.query.enumeration.ProfilingSupportStatus;
+import org.apache.skywalking.oap.server.core.query.input.Duration;
+import org.apache.skywalking.oap.server.core.query.type.Endpoint;
+import org.apache.skywalking.oap.server.core.query.type.Process;
+import org.apache.skywalking.oap.server.core.query.type.Service;
+import org.apache.skywalking.oap.server.core.query.type.ServiceInstance;
 import org.apache.skywalking.oap.server.core.storage.DAO;
 
-/**
- * @author peng-yongsheng
- */
 public interface IMetadataQueryDAO extends DAO {
 
-    int numOfService(final long startTimestamp, final long endTimestamp) throws IOException;
+    /**
+     * List all existing services.
+     */
+    List<Service> listServices() throws IOException;
 
-    int numOfEndpoint() throws IOException;
+    /**
+     * @param duration   The instance is required to be live in this duration.
+     * @param serviceId      the owner of the instances.
+     * @return list of instances matching the given conditions.
+     */
+    List<ServiceInstance> listInstances(final Duration duration,
+                                        final String serviceId) throws IOException;
 
-    int numOfConjectural(final int nodeTypeValue) throws IOException;
+    ServiceInstance getInstance(final String instanceId) throws IOException;
 
-    List<Service> getAllServices(final long startTimestamp, final long endTimestamp) throws IOException;
+    /**
+     * @param instanceIds instance id list
+     */
+    List<ServiceInstance> getInstances(final List<String> instanceIds) throws IOException;
 
-    List<Database> getAllDatabases() throws IOException;
+    /**
+     * @param keyword   to filter the endpoints
+     * @param serviceId the owner of the endpoints
+     * @param limit     max match size.
+     * @return list of endpoint matching the given conditions.
+     */
+    List<Endpoint> findEndpoint(final String keyword, final String serviceId, final int limit) throws IOException;
 
-    List<Service> searchServices(final long startTimestamp, final long endTimestamp,
-        final String keyword) throws IOException;
+    /**
+     * @param serviceId the service id of the process.
+     * @param supportStatus the profiling status of the process.
+     * @param lastPingStartTimeBucket the start time bucket of last ping.
+     * @param lastPingEndTimeBucket the end time bucket of last ping.
+     */
+    List<Process> listProcesses(final String serviceId, final ProfilingSupportStatus supportStatus,
+                                final long lastPingStartTimeBucket, final long lastPingEndTimeBucket) throws IOException;
 
-    Service searchService(final String serviceCode) throws IOException;
+    /**
+     * @param serviceInstanceId the instance id of the process.
+     * @param duration the start and end time bucket of last ping.
+     */
+    List<Process> listProcesses(final String serviceInstanceId, final Duration duration, boolean includeVirtual) throws IOException;
 
-    List<Endpoint> searchEndpoint(final String keyword, final String serviceId,
-        final int limit) throws IOException;
+    /**
+     * @param agentId the agent id of the process.
+     */
+    List<Process> listProcesses(final String agentId) throws IOException;
 
-    List<ServiceInstance> getServiceInstances(final long startTimestamp, final long endTimestamp,
-        final String serviceId) throws IOException;
+    /**
+     * @param serviceId the service id of the process
+     * @param profilingSupportStatus the profiling status of the process.
+     * @param lastPingStartTimeBucket the start time bucket of last ping.
+     * @param lastPingEndTimeBucket the end time bucket of last ping.
+     */
+    long getProcessCount(final String serviceId,
+                         final ProfilingSupportStatus profilingSupportStatus, final long lastPingStartTimeBucket,
+                         final long lastPingEndTimeBucket) throws IOException;
+
+    /**
+     * @param instanceId the service instance id of the process
+     */
+    long getProcessCount(final String instanceId) throws IOException;
+
+    /**
+     * @param processId the id of the process.
+     */
+    Process getProcess(final String processId) throws IOException;
 }

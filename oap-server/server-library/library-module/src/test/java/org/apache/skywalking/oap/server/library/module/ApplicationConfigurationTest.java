@@ -16,13 +16,14 @@
  *
  */
 
-
 package org.apache.skywalking.oap.server.library.module;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Properties;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class ApplicationConfigurationTest {
     @Test
@@ -36,8 +37,10 @@ public class ApplicationConfigurationTest {
         p2.setProperty("prop2", "value2-prop");
         configuration.addModule("MO-1").addProviderConfiguration("MO-1-P1", p1).addProviderConfiguration("MO-1-P2", p2);
 
-        Assert.assertArrayEquals(new String[] {"MO-1"}, configuration.moduleList());
-        Assert.assertEquals("value2-prop", configuration.getModuleConfiguration("MO-1").getProviderConfiguration("MO-1-P2").getProperty("prop2"));
-        Assert.assertEquals(p1, configuration.getModuleConfiguration("MO-1").getProviderConfiguration("MO-1-P1"));
+        assertArrayEquals(new String[] {"MO-1"}, configuration.moduleList());
+        assertEquals("value2-prop", configuration.getModuleConfiguration("MO-1")
+                                                        .getProviderConfiguration("MO-1-P2")
+                                                        .getProperty("prop2"));
+        assertEquals(p1, configuration.getModuleConfiguration("MO-1").getProviderConfiguration("MO-1-P1"));
     }
 }

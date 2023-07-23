@@ -18,54 +18,66 @@
 
 package org.apache.skywalking.oap.server.cluster.plugin.kubernetes;
 
-import org.apache.skywalking.oap.server.cluster.plugin.kubernetes.dependencies.*;
-import org.apache.skywalking.oap.server.core.cluster.*;
-import org.apache.skywalking.oap.server.library.module.*;
+import org.apache.skywalking.oap.server.core.CoreModule;
+import org.apache.skywalking.oap.server.core.cluster.ClusterCoordinator;
+import org.apache.skywalking.oap.server.core.cluster.ClusterModule;
+import org.apache.skywalking.oap.server.core.cluster.ClusterNodesQuery;
+import org.apache.skywalking.oap.server.core.cluster.ClusterRegister;
+import org.apache.skywalking.oap.server.library.module.ModuleDefine;
+import org.apache.skywalking.oap.server.library.module.ModuleProvider;
+import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
 
 /**
  * Use kubernetes to manage all instances in Skywalking cluster.
- *
- * @author gaohongtao
  */
 public class ClusterModuleKubernetesProvider extends ModuleProvider {
 
-    private final ClusterModuleKubernetesConfig config;
+    private ClusterModuleKubernetesConfig config;
     private KubernetesCoordinator coordinator;
 
-    public ClusterModuleKubernetesProvider() {
-        super();
-        this.config = new ClusterModuleKubernetesConfig();
-    }
-
-    @Override public String name() {
+    @Override
+    public String name() {
         return "kubernetes";
     }
 
-    @Override public Class<? extends ModuleDefine> module() {
+    @Override
+    public Class<? extends ModuleDefine> module() {
         return ClusterModule.class;
     }
 
-    @Override public ModuleConfig createConfigBeanIfAbsent() {
-        return config;
+    @Override
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<ClusterModuleKubernetesConfig>() {
+            @Override
+            public Class type() {
+                return ClusterModuleKubernetesConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final ClusterModuleKubernetesConfig initialized) {
+                config = initialized;
+            }
+        };
     }
 
-    @Override public void prepare() throws ServiceNotProvidedException {
-        coordinator = new KubernetesCoordinator(getManager(),
-            new NamespacedPodListWatch(config.getNamespace(), config.getLabelSelector(), config.getWatchTimeoutSeconds()),
-            new UidEnvSupplier(config.getUidEnvName()));
+    @Override
+    public void prepare() throws ServiceNotProvidedException {
+        coordinator = new KubernetesCoordinator(getManager(), config);
         this.registerServiceImplementation(ClusterRegister.class, coordinator);
         this.registerServiceImplementation(ClusterNodesQuery.class, coordinator);
+        this.registerServiceImplementation(ClusterCoordinator.class, coordinator);
     }
 
-    @Override public void start() {
-
+    @Override
+    public void start() {
     }
 
-    @Override public void notifyAfterCompleted() {
-        coordinator.start();
+    @Override
+    public void notifyAfterCompleted() {
     }
 
-    @Override public String[] requiredModules() {
-        return new String[0];
+    @Override
+    public String[] requiredModules() {
+        return new String[] {CoreModule.NAME};
     }
 }

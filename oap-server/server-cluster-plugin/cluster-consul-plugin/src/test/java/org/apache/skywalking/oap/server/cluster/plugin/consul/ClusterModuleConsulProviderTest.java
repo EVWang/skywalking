@@ -15,6 +15,7 @@
  * limitations under the License.
  *
  */
+
 package org.apache.skywalking.oap.server.cluster.plugin.consul;
 
 import com.google.common.collect.Lists;
@@ -22,32 +23,51 @@ import com.google.common.net.HostAndPort;
 import com.orbitz.consul.Consul;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.cluster.ClusterModule;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
+import org.apache.skywalking.oap.server.library.module.ModuleManager;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
+import org.apache.skywalking.oap.server.telemetry.none.NoneTelemetryProvider;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.powermock.api.mockito.PowerMockito;
-import org.powermock.core.classloader.annotations.PowerMockIgnore;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.powermock.modules.junit4.PowerMockRunner;
+import org.mockito.Mock;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.powermock.reflect.Whitebox;
 
 import java.util.Collection;
 import java.util.List;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyCollection;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-/**
- * Created by dengming, 2019.05.01
- */
-@RunWith(PowerMockRunner.class)
-@PrepareForTest(Consul.class)
-@PowerMockIgnore("javax.management.*")
+@ExtendWith(MockitoExtension.class)
 public class ClusterModuleConsulProviderTest {
 
     private ClusterModuleConsulProvider provider = new ClusterModuleConsulProvider();
+
+    @Mock
+    private ModuleManager moduleManager;
+    @Mock
+    private NoneTelemetryProvider telemetryProvider;
+
+    @BeforeEach
+    public void before() {
+        TelemetryModule telemetryModule = Mockito.spy(TelemetryModule.class);
+        Whitebox.setInternalState(telemetryModule, "loadedProvider", telemetryProvider);
+        provider.setManager(moduleManager);
+        Whitebox.setInternalState(provider, "config", new ClusterModuleConsulConfig());
+    }
 
     @Test
     public void name() {
@@ -60,14 +80,8 @@ public class ClusterModuleConsulProviderTest {
     }
 
     @Test
-    public void createConfigBeanIfAbsent() {
-        ModuleConfig moduleConfig = provider.createConfigBeanIfAbsent();
-        assertTrue(moduleConfig instanceof ClusterModuleConsulConfig);
-    }
-
-    @Test(expected = ModuleStartException.class)
     public void prepareWithNonHost() throws Exception {
-        provider.prepare();
+        assertThrows(ModuleStartException.class, () -> provider.prepare());
     }
 
     @Test
@@ -81,22 +95,24 @@ public class ClusterModuleConsulProviderTest {
         Consul.Builder builder = mock(Consul.Builder.class);
         when(builder.build()).thenReturn(consulClient);
 
-        PowerMockito.mockStatic(Consul.class);
-        when(Consul.builder()).thenReturn(builder);
-        when(builder.withConnectTimeoutMillis(anyLong())).thenReturn(builder);
+        try (MockedStatic<Consul> ignored = mockStatic(Consul.class)) {
+            when(Consul.builder()).thenReturn(builder);
+            when(builder.withConnectTimeoutMillis(anyLong())).thenReturn(builder);
 
-        when(builder.withMultipleHostAndPort(anyCollection(), anyLong())).thenReturn(builder);
-        provider.prepare();
+            when(builder.withMultipleHostAndPort(anyCollection(), anyLong())).thenReturn(builder);
+            provider.prepare();
 
-        ArgumentCaptor<Collection> addressCaptor = ArgumentCaptor.forClass(Collection.class);
-        ArgumentCaptor<Long> timeCaptor = ArgumentCaptor.forClass(long.class);
-        verify(builder).withMultipleHostAndPort(addressCaptor.capture(), timeCaptor.capture());
+            ArgumentCaptor<Collection> addressCaptor = ArgumentCaptor.forClass(Collection.class);
+            ArgumentCaptor<Long> timeCaptor = ArgumentCaptor.forClass(long.class);
+            verify(builder).withMultipleHostAndPort(addressCaptor.capture(), timeCaptor.capture());
 
-        List<HostAndPort> address = (List<HostAndPort>) addressCaptor.getValue();
-        assertEquals(2, address.size());
-        assertEquals(Lists.newArrayList(HostAndPort.fromParts("10.0.0.1", 1000),
-                HostAndPort.fromParts("10.0.0.2", 1001)
-        ), address);
+            List<HostAndPort> address = (List<HostAndPort>) addressCaptor.getValue();
+            assertEquals(2, address.size());
+            assertEquals(
+                    Lists.newArrayList(HostAndPort.fromParts("10.0.0.1", 1000), HostAndPort.fromParts("10.0.0.2", 1001)),
+                    address
+            );
+        }
     }
 
     @Test
@@ -109,19 +125,20 @@ public class ClusterModuleConsulProviderTest {
         Consul.Builder builder = mock(Consul.Builder.class);
         when(builder.build()).thenReturn(consulClient);
 
-        PowerMockito.mockStatic(Consul.class);
-        when(Consul.builder()).thenReturn(builder);
-        when(builder.withConnectTimeoutMillis(anyLong())).thenCallRealMethod();
+        try (MockedStatic<Consul> ignored = mockStatic(Consul.class)) {
+            when(Consul.builder()).thenReturn(builder);
+            when(builder.withConnectTimeoutMillis(anyLong())).thenReturn(builder);
 
-        when(builder.withHostAndPort(any())).thenReturn(builder);
+            when(builder.withHostAndPort(any())).thenReturn(builder);
 
-        provider.prepare();
+            provider.prepare();
 
-        ArgumentCaptor<HostAndPort> hostAndPortArgumentCaptor = ArgumentCaptor.forClass(HostAndPort.class);
-        verify(builder).withHostAndPort(hostAndPortArgumentCaptor.capture());
+            ArgumentCaptor<HostAndPort> hostAndPortArgumentCaptor = ArgumentCaptor.forClass(HostAndPort.class);
+            verify(builder).withHostAndPort(hostAndPortArgumentCaptor.capture());
 
-        HostAndPort address = hostAndPortArgumentCaptor.getValue();
-        assertEquals(HostAndPort.fromParts("10.0.0.1", 1000), address);
+            HostAndPort address = hostAndPortArgumentCaptor.getValue();
+            assertEquals(HostAndPort.fromParts("10.0.0.1", 1000), address);
+        }
     }
 
     @Test
@@ -137,6 +154,6 @@ public class ClusterModuleConsulProviderTest {
     @Test
     public void requiredModules() {
         String[] modules = provider.requiredModules();
-        assertArrayEquals(new String[]{CoreModule.NAME}, modules);
+        assertArrayEquals(new String[] {CoreModule.NAME}, modules);
     }
 }

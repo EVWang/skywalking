@@ -18,161 +18,52 @@
 
 package org.apache.skywalking.oap.server.storage.plugin.jdbc.mysql;
 
-import java.sql.*;
-import org.apache.skywalking.oap.server.core.analysis.manual.segment.SegmentRecord;
-import org.apache.skywalking.oap.server.core.analysis.metrics.IntKeyLongValueHashMap;
-import org.apache.skywalking.oap.server.core.register.RegisterSource;
-import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
-import org.apache.skywalking.oap.server.core.storage.StorageException;
-import org.apache.skywalking.oap.server.core.storage.model.*;
+import com.google.gson.JsonObject;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.skywalking.oap.server.core.storage.model.ModelColumn;
+import org.apache.skywalking.oap.server.core.storage.type.StorageDataComplexObject;
 import org.apache.skywalking.oap.server.library.client.Client;
-import org.apache.skywalking.oap.server.library.client.jdbc.JDBCClientException;
-import org.apache.skywalking.oap.server.library.client.jdbc.hikaricp.JDBCHikariCPClient;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
-import org.apache.skywalking.oap.server.storage.plugin.jdbc.SQLBuilder;
-import org.apache.skywalking.oap.server.storage.plugin.jdbc.h2.dao.H2TableInstaller;
-import org.slf4j.*;
-
-import static org.apache.skywalking.oap.server.core.source.DefaultScopeDefine.*;
+import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.JDBCTableInstaller;
 
 /**
  * Extend H2TableInstaller but match MySQL SQL syntax.
- *
- * @author wusheng
  */
-public class MySQLTableInstaller extends H2TableInstaller {
-
-    private static final Logger logger = LoggerFactory.getLogger(MySQLTableInstaller.class);
-
-    public MySQLTableInstaller(ModuleManager moduleManager) {
-        super(moduleManager);
-        /*
-         * Override column because the default column names in core have syntax conflict with MySQL.
-         */
-        this.overrideColumnName("precision", "cal_precision");
-        this.overrideColumnName("match", "match_num");
-    }
-
-    @Override protected void createTable(Client client, Model model) throws StorageException {
-        super.createTable(client, model);
-        JDBCHikariCPClient jdbcHikariCPClient = (JDBCHikariCPClient)client;
-        this.createIndexes(jdbcHikariCPClient, model);
+@Slf4j
+public class MySQLTableInstaller extends JDBCTableInstaller {
+    public MySQLTableInstaller(Client client, ModuleManager moduleManager) {
+        super(client, moduleManager);
     }
 
     @Override
-    protected String getColumnType(Model model, ColumnName name, Class<?> type) {
-        if (Integer.class.equals(type) || int.class.equals(type)) {
-            return "INT";
-        } else if (Long.class.equals(type) || long.class.equals(type)) {
-            return "BIGINT";
-        } else if (Double.class.equals(type) || double.class.equals(type)) {
-            return "DOUBLE";
+    public void start() {
+        /*
+         * Override column because the default column names in core have syntax conflict with MySQL.
+         */
+        overrideColumnName("value", "value_");
+        overrideColumnName("precision", "cal_precision");
+        overrideColumnName("match", "match_num");
+    }
+
+    @Override
+    public String getColumnDefinition(final ModelColumn column) {
+        final var storageName = column.getColumnName().getStorageName();
+        final var type = column.getType();
+        if (StorageDataComplexObject.class.isAssignableFrom(type)) {
+            return storageName + " MEDIUMTEXT";
         } else if (String.class.equals(type)) {
-            if (DefaultScopeDefine.SEGMENT == model.getScopeId()) {
-                if (name.getName().equals(SegmentRecord.TRACE_ID) || name.getName().equals(SegmentRecord.SEGMENT_ID))
-                    return "VARCHAR(300)";
-                if (name.getName().equals(SegmentRecord.DATA_BINARY)) {
-                    return "MEDIUMTEXT";
-                }
+            if (column.getLength() > 16383) {
+                return storageName + " MEDIUMTEXT";
+            } else {
+                return storageName + " VARCHAR(" + column.getLength() + ")";
             }
-            return "VARCHAR(2000)";
-        } else if (IntKeyLongValueHashMap.class.equals(type)) {
-            return "MEDIUMTEXT";
-        } else if (byte[].class.equals(type)) {
-            return "MEDIUMTEXT";
-        } else {
-            throw new IllegalArgumentException("Unsupported data type: " + type.getName());
+        } else if (JsonObject.class.equals(type)) {
+            if (column.getLength() > 16383) {
+                return storageName + " MEDIUMTEXT";
+            } else {
+                return storageName + " VARCHAR(" + column.getLength() + ")";
+            }
         }
-    }
-
-    protected void createIndexes(JDBCHikariCPClient client, Model model) throws StorageException {
-        switch (model.getScopeId()) {
-            case SERVICE_INVENTORY:
-            case SERVICE_INSTANCE_INVENTORY:
-            case NETWORK_ADDRESS:
-            case ENDPOINT_INVENTORY:
-                createInventoryIndexes(client, model);
-                return;
-            case SEGMENT:
-                createSegmentIndexes(client, model);
-                return;
-            case ALARM:
-                createAlarmIndexes(client, model);
-                return;
-            default:
-                createIndexesForAllMetrics(client, model);
-        }
-    }
-
-    private void createIndexesForAllMetrics(JDBCHikariCPClient client, Model model) throws StorageException {
-        try (Connection connection = client.getConnection()) {
-            SQLBuilder tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_TIME_BUCKET ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.TIME_BUCKET).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-        } catch (JDBCClientException | SQLException e) {
-            throw new StorageException(e.getMessage(), e);
-        }
-    }
-
-    private void createAlarmIndexes(JDBCHikariCPClient client, Model model) throws StorageException {
-        try (Connection connection = client.getConnection()) {
-            SQLBuilder tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_TIME_BUCKET ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.TIME_BUCKET).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-        } catch (JDBCClientException | SQLException e) {
-            throw new StorageException(e.getMessage(), e);
-        }
-    }
-
-    private void createSegmentIndexes(JDBCHikariCPClient client, Model model) throws StorageException {
-        try (Connection connection = client.getConnection()) {
-            SQLBuilder tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_TRACE_ID ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.TRACE_ID).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-
-            tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_ENDPOINT_ID ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.ENDPOINT_ID).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-
-            tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_LATENCY ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.LATENCY).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-
-            tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_TIME_BUCKET ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(SegmentRecord.TIME_BUCKET).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-        } catch (JDBCClientException | SQLException e) {
-            throw new StorageException(e.getMessage(), e);
-        }
-    }
-
-    private void createInventoryIndexes(JDBCHikariCPClient client, Model model) throws StorageException {
-        try (Connection connection = client.getConnection()) {
-            SQLBuilder tableIndexSQL = new SQLBuilder("CREATE UNIQUE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_SEQ ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(RegisterSource.SEQUENCE).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-
-            tableIndexSQL = new SQLBuilder("CREATE INDEX ");
-            tableIndexSQL.append(model.getName().toUpperCase()).append("_TIME ");
-            tableIndexSQL.append("ON ").append(model.getName()).append("(").append(RegisterSource.HEARTBEAT_TIME).append(", ").append(RegisterSource.REGISTER_TIME).append(")");
-            createIndex(client, connection, model, tableIndexSQL);
-        } catch (JDBCClientException | SQLException e) {
-            throw new StorageException(e.getMessage(), e);
-        }
-    }
-
-    private void createIndex(JDBCHikariCPClient client, Connection connection, Model model,
-        SQLBuilder indexSQL) throws JDBCClientException {
-        if (logger.isDebugEnabled()) {
-            logger.debug("create index for table {}, sql: {} ", model.getName(), indexSQL.toStringInNewLine());
-        }
-        client.execute(connection, indexSQL.toString());
+        return super.getColumnDefinition(column);
     }
 }

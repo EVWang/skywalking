@@ -21,20 +21,13 @@ package org.apache.skywalking.oap.server.configuration.zookeeper;
 import com.google.common.base.Strings;
 import org.apache.skywalking.oap.server.configuration.api.AbstractConfigurationProvider;
 import org.apache.skywalking.oap.server.configuration.api.ConfigWatcherRegister;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 
 /**
  * Get configuration from Zookeeper.
- *
- * @author zhaoyuguang
  */
 public class ZookeeperConfigurationProvider extends AbstractConfigurationProvider {
     private ZookeeperServerSettings settings;
-
-    public ZookeeperConfigurationProvider() {
-        settings = new ZookeeperServerSettings();
-    }
 
     @Override
     public String name() {
@@ -42,8 +35,18 @@ public class ZookeeperConfigurationProvider extends AbstractConfigurationProvide
     }
 
     @Override
-    public ModuleConfig createConfigBeanIfAbsent() {
-        return settings;
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<ZookeeperServerSettings>() {
+            @Override
+            public Class type() {
+                return ZookeeperServerSettings.class;
+            }
+
+            @Override
+            public void onInitialized(final ZookeeperServerSettings initialized) {
+                settings = initialized;
+            }
+        };
     }
 
     @Override
@@ -51,8 +54,8 @@ public class ZookeeperConfigurationProvider extends AbstractConfigurationProvide
         if (Strings.isNullOrEmpty(settings.getHostPort())) {
             throw new ModuleStartException("Zookeeper hostPort cannot be null or empty.");
         }
-        if (Strings.isNullOrEmpty(settings.getNameSpace())) {
-            throw new ModuleStartException("Zookeeper nameSpace cannot be null or empty.");
+        if (Strings.isNullOrEmpty(settings.getNamespace())) {
+            throw new ModuleStartException("Zookeeper namespace cannot be null or empty.");
         }
 
         try {

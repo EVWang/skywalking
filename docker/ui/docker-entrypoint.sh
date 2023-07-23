@@ -18,9 +18,4 @@
 
 set -e
 
-export LOGGING_CONFIG="webapp/logback.xml"
-
-[[ ! -z "$SW_OAP_ADDRESS" ]] && export COLLECTOR_RIBBON_LISTOFSERVERS=${SW_OAP_ADDRESS} && echo "COLLECTOR_RIBBON_LISTOFSERVERS=$COLLECTOR_RIBBON_LISTOFSERVERS"
-[[ ! -z "$SW_TIMEOUT" ]] && export COLLECTOR_RIBBON_READTIMEOUT=${SW_TIMEOUT} && echo "COLLECTOR_RIBBON_READTIMEOUT=$COLLECTOR_RIBBON_READTIMEOUT"
-
-exec java -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap -jar webapp/skywalking-webapp.jar "$@"
+exec java ${JAVA_OPTS} -cp webapp/skywalking-webapp.jar:webapp org.apache.skywalking.oap.server.webapp.ApplicationStartUp "$@"

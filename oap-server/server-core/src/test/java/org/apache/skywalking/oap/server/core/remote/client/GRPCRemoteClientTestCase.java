@@ -18,33 +18,64 @@
 
 package org.apache.skywalking.oap.server.core.remote.client;
 
-import io.grpc.testing.GrpcServerRule;
-import java.util.concurrent.TimeUnit;
+import io.grpc.ManagedChannel;
+import io.grpc.Server;
+import io.grpc.inprocess.InProcessChannelBuilder;
+import io.grpc.inprocess.InProcessServerBuilder;
+import io.grpc.util.MutableHandlerRegistry;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.remote.RemoteServiceHandler;
 import org.apache.skywalking.oap.server.core.remote.data.StreamData;
 import org.apache.skywalking.oap.server.core.remote.grpc.proto.RemoteData;
-import org.apache.skywalking.oap.server.core.worker.*;
+import org.apache.skywalking.oap.server.core.worker.AbstractWorker;
+import org.apache.skywalking.oap.server.core.worker.IWorkerInstanceGetter;
+import org.apache.skywalking.oap.server.core.worker.IWorkerInstanceSetter;
+import org.apache.skywalking.oap.server.core.worker.WorkerInstancesService;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
-import org.apache.skywalking.oap.server.telemetry.api.*;
-import org.apache.skywalking.oap.server.testing.module.*;
-import org.junit.*;
+import org.apache.skywalking.oap.server.telemetry.api.CounterMetrics;
+import org.apache.skywalking.oap.server.telemetry.api.HistogramMetrics;
+import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
+import org.apache.skywalking.oap.server.testing.module.ModuleDefineTesting;
+import org.apache.skywalking.oap.server.testing.module.ModuleManagerTesting;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.mockito.Mockito.*;
+import java.io.IOException;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
-/**
- * @author peng-yongsheng
- */
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
+
 public class GRPCRemoteClientTestCase {
-
     private final String nextWorkerName = "mock-worker";
     private ModuleManagerTesting moduleManager;
-    @Rule public final GrpcServerRule grpcServerRule = new GrpcServerRule().directExecutor();
 
-    @Before
-    public void before() {
+    private Server server;
+    private ManagedChannel channel;
+    private MutableHandlerRegistry serviceRegistry;
+
+    @BeforeEach
+    public void before() throws IOException {
         moduleManager = new ModuleManagerTesting();
+        serviceRegistry = new MutableHandlerRegistry();
+        final String name = UUID.randomUUID().toString();
+        InProcessServerBuilder serverBuilder =
+                InProcessServerBuilder
+                        .forName(name)
+                        .fallbackHandlerRegistry(serviceRegistry);
+
+        server = serverBuilder.build();
+        server.start();
+
+        channel = InProcessChannelBuilder.forName(name).build();
+
         ModuleDefineTesting moduleDefine = new ModuleDefineTesting();
         moduleManager.put(CoreModule.NAME, moduleDefine);
 
@@ -56,25 +87,48 @@ public class GRPCRemoteClientTestCase {
         workerInstancesService.put(nextWorkerName, worker, TestStreamData.class);
     }
 
+    @AfterEach
+    public void after() {
+        channel.shutdown();
+        server.shutdown();
+
+        try {
+            channel.awaitTermination(1L, TimeUnit.MINUTES);
+            server.awaitTermination(1L, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        } finally {
+            channel.shutdownNow();
+            channel = null;
+            server.shutdownNow();
+            server = null;
+        }
+    }
+
     @Test
     public void testPush() throws InterruptedException {
         MetricsCreator metricsCreator = mock(MetricsCreator.class);
         when(metricsCreator.createCounter(any(), any(), any(), any())).thenReturn(new CounterMetrics() {
-            @Override public void inc() {
+            @Override
+            public void inc() {
 
             }
 
-            @Override public void inc(double value) {
+            @Override
+            public void inc(double value) {
 
             }
         });
 
         when(metricsCreator.createHistogramMetric(any(), any(), any(), any())).thenReturn(new HistogramMetrics() {
-            @Override public Timer createTimer() {
+            @Override
+            public Timer createTimer() {
                 return super.createTimer();
             }
 
-            @Override public void observe(double value) {
+            @Override
+            public void observe(double value) {
 
             }
         });
@@ -83,13 +137,13 @@ public class GRPCRemoteClientTestCase {
         moduleManager.put(TelemetryModule.NAME, telemetryModuleDefine);
         telemetryModuleDefine.provider().registerServiceImplementation(MetricsCreator.class, metricsCreator);
 
-        grpcServerRule.getServiceRegistry().addService(new RemoteServiceHandler(moduleManager));
+        serviceRegistry.addService(new RemoteServiceHandler(moduleManager));
 
         Address address = new Address("not-important", 11, false);
-        GRPCRemoteClient remoteClient = spy(new GRPCRemoteClient(moduleManager, address, 1, 10, 10));
+        GRPCRemoteClient remoteClient = spy(new GRPCRemoteClient(moduleManager, address, 1, 10, 10, null));
         remoteClient.connect();
 
-        doReturn(grpcServerRule.getChannel()).when(remoteClient).getChannel();
+        doReturn(channel).when(remoteClient).getChannel();
 
         for (int i = 0; i < 12; i++) {
             remoteClient.push(nextWorkerName, new TestStreamData());
@@ -102,30 +156,34 @@ public class GRPCRemoteClientTestCase {
 
         private long value;
 
-        @Override public int remoteHashCode() {
+        @Override
+        public int remoteHashCode() {
             return 0;
         }
 
-        @Override public void deserialize(RemoteData remoteData) {
+        @Override
+        public void deserialize(RemoteData remoteData) {
             this.value = remoteData.getDataLongs(0);
         }
 
-        @Override public RemoteData.Builder serialize() {
+        @Override
+        public RemoteData.Builder serialize() {
             RemoteData.Builder builder = RemoteData.newBuilder();
             builder.addDataLongs(987);
             return builder;
         }
     }
 
-    class TestWorker extends AbstractWorker {
+    static class TestWorker extends AbstractWorker {
 
         public TestWorker(ModuleDefineHolder moduleDefineHolder) {
             super(moduleDefineHolder);
         }
 
-        @Override public void in(Object o) {
-            TestStreamData streamData = (TestStreamData)o;
-            Assert.assertEquals(987, streamData.value);
+        @Override
+        public void in(Object o) {
+            TestStreamData streamData = (TestStreamData) o;
+            Assertions.assertEquals(987, streamData.value);
         }
     }
 }

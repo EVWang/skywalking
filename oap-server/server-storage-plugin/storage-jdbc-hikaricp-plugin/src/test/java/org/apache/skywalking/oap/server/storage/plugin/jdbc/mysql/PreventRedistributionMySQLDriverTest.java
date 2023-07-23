@@ -18,19 +18,19 @@
 
 package org.apache.skywalking.oap.server.storage.plugin.jdbc.mysql;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * This is a very special test case. It isn't for feature testing.
- *
- * In Apache, we can't redistribute MySQL Driver, because of GPL license, but we deliver MySQL solution sourceScopeId codes and
- * distribution by using JDBC.
- *
- * @author wusheng
+ * <p>
+ * In Apache, we can't redistribute MySQL Driver, because of GPL license, but we deliver MySQL solution sourceScopeId
+ * codes and distribution by using JDBC.
  */
 public class PreventRedistributionMySQLDriverTest {
-    @Test(expected = ClassNotFoundException.class)
+    @Test
     public void TestMySQLDriverNotExist() throws ClassNotFoundException {
-        Class.forName("com.mysql.cj.jdbc.Driver");
+        assertThrows(ClassNotFoundException.class, () -> Class.forName("com.mysql.cj.jdbc.Driver"));
     }
 }

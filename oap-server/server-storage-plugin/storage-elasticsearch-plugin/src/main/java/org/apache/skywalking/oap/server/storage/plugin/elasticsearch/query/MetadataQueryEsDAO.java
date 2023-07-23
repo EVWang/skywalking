@@ -22,289 +22,445 @@ import com.google.common.base.Strings;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import java.io.IOException;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.skywalking.library.elasticsearch.requests.search.BoolQueryBuilder;
+import org.apache.skywalking.library.elasticsearch.requests.search.Query;
+import org.apache.skywalking.library.elasticsearch.requests.search.RangeQueryBuilder;
+import org.apache.skywalking.library.elasticsearch.requests.search.Search;
+import org.apache.skywalking.library.elasticsearch.requests.search.SearchBuilder;
+import org.apache.skywalking.library.elasticsearch.response.search.SearchHit;
+import org.apache.skywalking.library.elasticsearch.response.search.SearchResponse;
+import org.apache.skywalking.oap.server.core.analysis.IDManager;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
+import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
+import org.apache.skywalking.oap.server.core.analysis.manual.endpoint.EndpointTraffic;
+import org.apache.skywalking.oap.server.core.analysis.manual.instance.InstanceTraffic;
+import org.apache.skywalking.oap.server.core.analysis.manual.process.ProcessDetectType;
+import org.apache.skywalking.oap.server.core.analysis.manual.process.ProcessTraffic;
+import org.apache.skywalking.oap.server.core.analysis.manual.service.ServiceTraffic;
+import org.apache.skywalking.oap.server.core.query.enumeration.Language;
+import org.apache.skywalking.oap.server.core.query.enumeration.ProfilingSupportStatus;
+import org.apache.skywalking.oap.server.core.query.input.Duration;
+import org.apache.skywalking.oap.server.core.query.type.Attribute;
+import org.apache.skywalking.oap.server.core.query.type.Endpoint;
+import org.apache.skywalking.oap.server.core.query.type.Process;
+import org.apache.skywalking.oap.server.core.query.type.Service;
+import org.apache.skywalking.oap.server.core.query.type.ServiceInstance;
+import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
+import org.apache.skywalking.oap.server.library.client.elasticsearch.ElasticSearchClient;
+import org.apache.skywalking.oap.server.library.client.elasticsearch.ElasticSearchScroller;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.StorageModuleElasticsearchConfig;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.ElasticSearchConverter;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.EsDAO;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.IndexController;
+import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.MatchCNameBuilder;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import org.apache.skywalking.oap.server.core.query.entity.Attribute;
-import org.apache.skywalking.oap.server.core.query.entity.Database;
-import org.apache.skywalking.oap.server.core.query.entity.Endpoint;
-import org.apache.skywalking.oap.server.core.query.entity.LanguageTrans;
-import org.apache.skywalking.oap.server.core.query.entity.Service;
-import org.apache.skywalking.oap.server.core.query.entity.ServiceInstance;
-import org.apache.skywalking.oap.server.core.register.EndpointInventory;
-import org.apache.skywalking.oap.server.core.register.NodeType;
-import org.apache.skywalking.oap.server.core.register.RegisterSource;
-import org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory;
-import org.apache.skywalking.oap.server.core.register.ServiceInventory;
-import org.apache.skywalking.oap.server.core.source.DetectPoint;
-import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
-import org.apache.skywalking.oap.server.library.client.elasticsearch.ElasticSearchClient;
-import org.apache.skywalking.oap.server.library.util.BooleanUtils;
-import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.EsDAO;
-import org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base.MatchCNameBuilder;
-import org.elasticsearch.action.get.GetResponse;
-import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.index.query.BoolQueryBuilder;
-import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.builder.SearchSourceBuilder;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
-import static org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory.PropertyUtil.HOST_NAME;
-import static org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory.PropertyUtil.IPV4S;
-import static org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory.PropertyUtil.LANGUAGE;
-import static org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory.PropertyUtil.OS_NAME;
-import static org.apache.skywalking.oap.server.core.register.ServiceInstanceInventory.PropertyUtil.PROCESS_NO;
+import static org.apache.skywalking.oap.server.core.analysis.manual.instance.InstanceTraffic.PropertyUtil.LANGUAGE;
 
-/**
- * @author peng-yongsheng
- */
 public class MetadataQueryEsDAO extends EsDAO implements IMetadataQueryDAO {
     private static final Gson GSON = new Gson();
 
     private final int queryMaxSize;
+    private final int scrollingBatchSize;
+    private String endpointTrafficNameAlias;
+    private boolean aliasNameInit = false;
+    private final int layerSize;
 
-    public MetadataQueryEsDAO(ElasticSearchClient client, int queryMaxSize) {
-        super(client);
-        this.queryMaxSize = queryMaxSize;
-    }
+    protected final Function<SearchHit, Service> searchHitServiceFunction = hit -> {
+        final var sourceAsMap = hit.getSource();
+        final var builder = new ServiceTraffic.Builder();
+        final var serviceTraffic = builder.storage2Entity(new ElasticSearchConverter.ToEntity(ServiceTraffic.INDEX_NAME, sourceAsMap));
+        final var serviceName = serviceTraffic.getName();
+        final var service = new Service();
+        service.setId(serviceTraffic.getServiceId());
+        service.setName(serviceName);
+        service.setShortName(serviceTraffic.getShortName());
+        service.setGroup(serviceTraffic.getGroup());
+        service.getLayers().add(serviceTraffic.getLayer().name());
+        return service;
+    };
 
-    @Override public int numOfService(long startTimestamp, long endTimestamp) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
+    protected final Function<SearchHit, ServiceInstance> searchHitServiceInstanceFunction = hit -> {
+        final var sourceAsMap = hit.getSource();
 
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(timeRangeQueryBuild(startTimestamp, endTimestamp));
+        final var instanceTraffic =
+            new InstanceTraffic.Builder().storage2Entity(new ElasticSearchConverter.ToEntity(InstanceTraffic.INDEX_NAME, sourceAsMap));
 
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(ServiceInventory.IS_ADDRESS, BooleanUtils.FALSE));
+        final var serviceInstance = new ServiceInstance();
+        serviceInstance.setId(instanceTraffic.id().build());
+        serviceInstance.setName(instanceTraffic.getName());
+        serviceInstance.setInstanceUUID(serviceInstance.getId());
 
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(0);
-
-        SearchResponse response = getClient().search(ServiceInventory.INDEX_NAME, sourceBuilder);
-        return (int)response.getHits().getTotalHits();
-    }
-
-    @Override public int numOfEndpoint() throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
-
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(EndpointInventory.DETECT_POINT, DetectPoint.SERVER.ordinal()));
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(0);
-
-        SearchResponse response = getClient().search(EndpointInventory.INDEX_NAME, sourceBuilder);
-        return (int)response.getHits().getTotalHits();
-    }
-
-    @Override
-    public int numOfConjectural(int nodeTypeValue) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
-
-        sourceBuilder.query(QueryBuilders.termQuery(ServiceInventory.NODE_TYPE, nodeTypeValue));
-        sourceBuilder.size(0);
-
-        SearchResponse response = getClient().search(ServiceInventory.INDEX_NAME, sourceBuilder);
-
-        return (int)response.getHits().getTotalHits();
-    }
-
-    @Override
-    public List<Service> getAllServices(long startTimestamp, long endTimestamp) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
-
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(timeRangeQueryBuild(startTimestamp, endTimestamp));
-
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(ServiceInventory.IS_ADDRESS, BooleanUtils.FALSE));
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(queryMaxSize);
-
-        SearchResponse response = getClient().search(ServiceInventory.INDEX_NAME, sourceBuilder);
-
-        return buildServices(response);
-    }
-
-    @Override
-    public List<Database> getAllDatabases() throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
-
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(ServiceInventory.NODE_TYPE, NodeType.Database.value()));
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(queryMaxSize);
-
-        SearchResponse response = getClient().search(ServiceInventory.INDEX_NAME, sourceBuilder);
-
-        List<Database> databases = new ArrayList<>();
-        for (SearchHit searchHit : response.getHits()) {
-            Map<String, Object> sourceAsMap = searchHit.getSourceAsMap();
-            Database database = new Database();
-            database.setId(((Number)sourceAsMap.get(ServiceInventory.SEQUENCE)).intValue());
-            database.setName((String)sourceAsMap.get(ServiceInventory.NAME));
-            String propertiesString = (String)sourceAsMap.get(ServiceInstanceInventory.PROPERTIES);
-            if (!Strings.isNullOrEmpty(propertiesString)) {
-                JsonObject properties = GSON.fromJson(propertiesString, JsonObject.class);
-                if (properties.has(ServiceInventory.PropertyUtil.DATABASE)) {
-                    database.setType(properties.get(ServiceInventory.PropertyUtil.DATABASE).getAsString());
+        final var properties = instanceTraffic.getProperties();
+        if (properties != null) {
+            for (final var property : properties.entrySet()) {
+                final var key = property.getKey();
+                final var value = property.getValue().getAsString();
+                if (key.equals(LANGUAGE)) {
+                    serviceInstance.setLanguage(Language.value(value));
                 } else {
-                    database.setType("UNKNOWN");
+                    serviceInstance.getAttributes().add(new Attribute(key, value));
                 }
             }
-            databases.add(database);
+        } else {
+            serviceInstance.setLanguage(Language.UNKNOWN);
         }
-        return databases;
-    }
+        return serviceInstance;
+    };
 
-    @Override public List<Service> searchServices(long startTimestamp, long endTimestamp,
-        String keyword) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
-
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(timeRangeQueryBuild(startTimestamp, endTimestamp));
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(ServiceInventory.IS_ADDRESS, BooleanUtils.FALSE));
-
-        if (!Strings.isNullOrEmpty(keyword)) {
-            String matchCName = MatchCNameBuilder.INSTANCE.build(ServiceInventory.NAME);
-            boolQueryBuilder.must().add(QueryBuilders.matchQuery(matchCName, keyword));
-        }
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(queryMaxSize);
-
-        SearchResponse response = getClient().search(ServiceInventory.INDEX_NAME, sourceBuilder);
-        return buildServices(response);
+    public MetadataQueryEsDAO(
+        ElasticSearchClient client,
+        StorageModuleElasticsearchConfig config) {
+        super(client);
+        this.queryMaxSize = config.getMetadataQueryMaxSize();
+        this.scrollingBatchSize = config.getScrollingBatchSize();
+        this.layerSize = Layer.values().length;
     }
 
     @Override
-    public Service searchService(String serviceCode) throws IOException {
-        GetResponse response = getClient().get(ServiceInventory.INDEX_NAME, ServiceInventory.buildId(serviceCode));
-        if (response.isExists()) {
-            Service service = new Service();
-            service.setId(((Number)response.getSource().get(ServiceInventory.SEQUENCE)).intValue());
-            service.setName((String)response.getSource().get(ServiceInventory.NAME));
-            return service;
-        } else {
-            return null;
+    public List<Service> listServices() {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ServiceTraffic.INDEX_NAME);
+
+        final int batchSize = Math.min(queryMaxSize, scrollingBatchSize);
+        final BoolQueryBuilder query = Query.bool();
+        final SearchBuilder search = Search.builder().query(query).size(batchSize);
+        if (IndexController.LogicIndicesRegister.isMergedTable(ServiceTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ServiceTraffic.INDEX_NAME));
         }
+
+        final var scroller = ElasticSearchScroller
+            .<Service>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(searchHitServiceFunction)
+            .build();
+        return scroller.scroll();
     }
 
-    @Override public List<Endpoint> searchEndpoint(String keyword, String serviceId,
-        int limit) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
+    @Override
+    public List<ServiceInstance> listInstances(Duration duration,
+                                               String serviceId) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(InstanceTraffic.INDEX_NAME);
 
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(EndpointInventory.SERVICE_ID, serviceId));
+        final long minuteTimeBucket = TimeBucket.getMinuteTimeBucket(duration.getStartTimestamp());
+        final BoolQueryBuilder query =
+            Query.bool()
+                 .must(Query.range(InstanceTraffic.LAST_PING_TIME_BUCKET).gte(minuteTimeBucket))
+                 .must(Query.term(InstanceTraffic.SERVICE_ID, serviceId));
+        if (IndexController.LogicIndicesRegister.isMergedTable(InstanceTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, InstanceTraffic.INDEX_NAME));
+        }
+        final int batchSize = Math.min(queryMaxSize, scrollingBatchSize);
+        final SearchBuilder search = Search.builder().query(query).size(batchSize);
+
+        final var scroller = ElasticSearchScroller
+            .<ServiceInstance>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(searchHitServiceInstanceFunction)
+            .build();
+        return scroller.scroll();
+    }
+
+    @Override
+    public ServiceInstance getInstance(final String instanceId) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(InstanceTraffic.INDEX_NAME);
+        String id = instanceId;
+        if (IndexController.LogicIndicesRegister.isMergedTable(InstanceTraffic.INDEX_NAME)) {
+            id = IndexController.INSTANCE.generateDocId(InstanceTraffic.INDEX_NAME, instanceId);
+        }
+        final BoolQueryBuilder query =
+            Query.bool()
+                 .must(Query.term("_id", id));
+        final SearchBuilder search = Search.builder().query(query).size(1);
+
+        final SearchResponse response = getClient().search(index, search.build());
+        final List<ServiceInstance> instances = buildInstances(response);
+        return instances.size() > 0 ? instances.get(0) : null;
+    }
+
+    @Override
+    public List<ServiceInstance> getInstances(List<String> instanceIds) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(InstanceTraffic.INDEX_NAME);
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(InstanceTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, InstanceTraffic.INDEX_NAME));
+            instanceIds = instanceIds.stream()
+                .map(s -> IndexController.INSTANCE.generateDocId(InstanceTraffic.INDEX_NAME, s)).collect(Collectors.toList());
+        }
+        query.must(Query.terms("_id", instanceIds));
+        final SearchBuilder search = Search.builder().query(query).size(instanceIds.size());
+
+        final SearchResponse response = getClient().search(index, search.build());
+        return buildInstances(response);
+    }
+
+    @Override
+    public List<Endpoint> findEndpoint(String keyword, String serviceId, int limit) {
+        initColumnName();
+        final String index = IndexController.LogicIndicesRegister.getPhysicalTableName(
+            EndpointTraffic.INDEX_NAME);
+
+        final BoolQueryBuilder query =
+            Query.bool()
+                 .must(Query.term(EndpointTraffic.SERVICE_ID, serviceId));
 
         if (!Strings.isNullOrEmpty(keyword)) {
-            String matchCName = MatchCNameBuilder.INSTANCE.build(EndpointInventory.NAME);
-            boolQueryBuilder.must().add(QueryBuilders.matchQuery(matchCName, keyword));
+            String matchCName = MatchCNameBuilder.INSTANCE.build(endpointTrafficNameAlias);
+            query.must(Query.match(matchCName, keyword));
         }
 
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(EndpointInventory.DETECT_POINT, DetectPoint.SERVER.ordinal()));
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(limit);
-
-        SearchResponse response = getClient().search(EndpointInventory.INDEX_NAME, sourceBuilder);
-
-        List<Endpoint> endpoints = new ArrayList<>();
-        for (SearchHit searchHit : response.getHits()) {
-            Map<String, Object> sourceAsMap = searchHit.getSourceAsMap();
-
-            Endpoint endpoint = new Endpoint();
-            endpoint.setId(((Number)sourceAsMap.get(EndpointInventory.SEQUENCE)).intValue());
-            endpoint.setName((String)sourceAsMap.get(EndpointInventory.NAME));
-            endpoints.add(endpoint);
+        if (IndexController.LogicIndicesRegister.isMergedTable(EndpointTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, EndpointTraffic.INDEX_NAME));
         }
 
-        return endpoints;
+        final var search = Search.builder().query(query).size(limit);
+
+        final var scroller = ElasticSearchScroller
+            .<Endpoint>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(searchHit -> {
+                final var sourceAsMap = searchHit.getSource();
+
+                final var endpointTraffic =
+                    new EndpointTraffic.Builder().storage2Entity(new ElasticSearchConverter.ToEntity(EndpointTraffic.INDEX_NAME, sourceAsMap));
+
+                final var endpoint = new Endpoint();
+                endpoint.setId(endpointTraffic.id().build());
+                endpoint.setName(endpointTraffic.getName());
+                return endpoint;
+            })
+            .build();
+
+        return scroller.scroll();
     }
 
-    @Override public List<ServiceInstance> getServiceInstances(long startTimestamp, long endTimestamp,
-        String serviceId) throws IOException {
-        SearchSourceBuilder sourceBuilder = SearchSourceBuilder.searchSource();
+    @Override
+    public List<Process> listProcesses(String serviceId, ProfilingSupportStatus supportStatus, long lastPingStartTimeBucket, long lastPingEndTimeBucket) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
 
-        BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
-        boolQueryBuilder.must().add(timeRangeQueryBuild(startTimestamp, endTimestamp));
-
-        boolQueryBuilder.must().add(QueryBuilders.termQuery(ServiceInstanceInventory.SERVICE_ID, serviceId));
-
-        sourceBuilder.query(boolQueryBuilder);
-        sourceBuilder.size(queryMaxSize);
-
-        SearchResponse response = getClient().search(ServiceInstanceInventory.INDEX_NAME, sourceBuilder);
-
-        List<ServiceInstance> serviceInstances = new ArrayList<>();
-        for (SearchHit searchHit : response.getHits()) {
-            Map<String, Object> sourceAsMap = searchHit.getSourceAsMap();
-
-            ServiceInstance serviceInstance = new ServiceInstance();
-            serviceInstance.setId(String.valueOf(sourceAsMap.get(ServiceInstanceInventory.SEQUENCE)));
-            serviceInstance.setName((String)sourceAsMap.get(ServiceInstanceInventory.NAME));
-            serviceInstance.setInstanceUUID((String)sourceAsMap.get(ServiceInstanceInventory.INSTANCE_UUID));
-
-            String propertiesString = (String)sourceAsMap.get(ServiceInstanceInventory.PROPERTIES);
-            if (!Strings.isNullOrEmpty(propertiesString)) {
-                JsonObject properties = GSON.fromJson(propertiesString, JsonObject.class);
-                for (Map.Entry<String, JsonElement> property : properties.entrySet()) {
-                    String key = property.getKey();
-                    String value = property.getValue().getAsString();
-                    if (key.equals(LANGUAGE)) {
-                        serviceInstance.setLanguage(LanguageTrans.INSTANCE.value(value));
-                    } else if (key.equals(OS_NAME)) {
-                        serviceInstance.getAttributes().add(new Attribute(OS_NAME, value));
-                    } else if (key.equals(HOST_NAME)) {
-                        serviceInstance.getAttributes().add(new Attribute(HOST_NAME, value));
-                    } else if (key.equals(PROCESS_NO)) {
-                        serviceInstance.getAttributes().add(new Attribute(PROCESS_NO, value));
-                    } else if (key.equals(IPV4S)) {
-                        List<String> ipv4s = ServiceInstanceInventory.PropertyUtil.ipv4sDeserialize(properties.get(IPV4S).getAsString());
-                        for (String ipv4 : ipv4s) {
-                            serviceInstance.getAttributes().add(new Attribute(ServiceInstanceInventory.PropertyUtil.IPV4S, ipv4));
-                        }
-                    } else {
-                        serviceInstance.getAttributes().add(new Attribute(key, value));
-                    }
-                }
-            }
-
-            serviceInstances.add(serviceInstance);
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
         }
+        final SearchBuilder search = Search.builder().query(query).size(queryMaxSize);
+        appendProcessWhereQuery(query, serviceId, null, null, supportStatus, lastPingStartTimeBucket, lastPingEndTimeBucket, false);
 
-        return serviceInstances;
+        final var scroller = ElasticSearchScroller
+            .<Process>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(this::buildProcess)
+            .build();
+        return scroller.scroll();
+    }
+
+    @Override
+    public List<Process> listProcesses(String serviceInstanceId, Duration duration, boolean includeVirtual) {
+        long lastPingStartTimeBucket = duration.getStartTimeBucket();
+        long lastPingEndTimeBucket = duration.getEndTimeBucket();
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
+
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
+        }
+        final SearchBuilder search = Search.builder().query(query).size(queryMaxSize);
+        appendProcessWhereQuery(query, null, serviceInstanceId, null, null, lastPingStartTimeBucket, lastPingEndTimeBucket, includeVirtual);
+
+        final var scroller = ElasticSearchScroller
+            .<Process>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(this::buildProcess)
+            .build();
+        return scroller.scroll();
+    }
+
+    @Override
+    public List<Process> listProcesses(String agentId) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
+
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
+        }
+        final SearchBuilder search = Search.builder().query(query).size(queryMaxSize);
+        appendProcessWhereQuery(query, null, null, agentId, null, 0, 0, false);
+
+        final var scroller = ElasticSearchScroller
+            .<Process>builder()
+            .client(getClient())
+            .search(search.build())
+            .index(index)
+            .queryMaxSize(queryMaxSize)
+            .resultConverter(this::buildProcess)
+            .build();
+        return scroller.scroll();
+    }
+
+    @Override
+    public long getProcessCount(String serviceId, ProfilingSupportStatus profilingSupportStatus, long lastPingStartTimeBucket, long lastPingEndTimeBucket) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
+
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
+        }
+        final SearchBuilder search = Search.builder().query(query).size(0);
+        appendProcessWhereQuery(query, serviceId, null, null, profilingSupportStatus,
+            lastPingStartTimeBucket, lastPingEndTimeBucket, false);
+        final SearchResponse results = getClient().search(index, search.build());
+
+        return results.getHits().getTotal();
+    }
+
+    @Override
+    public long getProcessCount(String instanceId) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
+
+        final BoolQueryBuilder query = Query.bool();
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
+        }
+        final SearchBuilder search = Search.builder().query(query).size(0);
+        appendProcessWhereQuery(query, null, instanceId, null, null, 0, 0, false);
+        final SearchResponse results = getClient().search(index, search.build());
+
+        return results.getHits().getTotal();
+    }
+
+    private void appendProcessWhereQuery(BoolQueryBuilder query, String serviceId, String instanceId, String agentId,
+                                         final ProfilingSupportStatus profilingSupportStatus,
+                                         final long lastPingStartTimeBucket, final long lastPingEndTimeBucket,
+                                         boolean includeVirtual) {
+        if (StringUtil.isNotEmpty(serviceId)) {
+            query.must(Query.term(ProcessTraffic.SERVICE_ID, serviceId));
+        }
+        if (StringUtil.isNotEmpty(instanceId)) {
+            query.must(Query.term(ProcessTraffic.INSTANCE_ID, instanceId));
+        }
+        if (StringUtil.isNotEmpty(agentId)) {
+            query.must(Query.term(ProcessTraffic.AGENT_ID, agentId));
+        }
+        if (profilingSupportStatus != null) {
+            query.must(Query.term(ProcessTraffic.PROFILING_SUPPORT_STATUS, profilingSupportStatus.value()));
+        }
+        if (lastPingStartTimeBucket > 0) {
+            final RangeQueryBuilder rangeQuery = Query.range(ProcessTraffic.LAST_PING_TIME_BUCKET);
+            rangeQuery.gte(lastPingStartTimeBucket);
+            query.must(rangeQuery);
+        }
+        if (!includeVirtual) {
+            query.mustNot(Query.term(ProcessTraffic.DETECT_TYPE, ProcessDetectType.VIRTUAL.value()));
+        }
+    }
+
+    @Override
+    public Process getProcess(String processId) {
+        final String index =
+            IndexController.LogicIndicesRegister.getPhysicalTableName(ProcessTraffic.INDEX_NAME);
+        final BoolQueryBuilder query = Query.bool()
+                                            .must(Query.term("_id", processId));
+        if (IndexController.LogicIndicesRegister.isMergedTable(ProcessTraffic.INDEX_NAME)) {
+            query.must(Query.term(IndexController.LogicIndicesRegister.METRIC_TABLE_NAME, ProcessTraffic.INDEX_NAME));
+        }
+        final SearchBuilder search = Search.builder().query(query).size(queryMaxSize);
+
+        final var response = getClient().search(index, search.build());
+        final var iterator = response.getHits().iterator();
+        if (iterator.hasNext()) {
+            return buildProcess(iterator.next());
+        }
+        return null;
     }
 
     private List<Service> buildServices(SearchResponse response) {
         List<Service> services = new ArrayList<>();
-        for (SearchHit searchHit : response.getHits()) {
-            Map<String, Object> sourceAsMap = searchHit.getSourceAsMap();
-
-            Service service = new Service();
-            service.setId(((Number)sourceAsMap.get(ServiceInventory.SEQUENCE)).intValue());
-            service.setName((String)sourceAsMap.get(ServiceInventory.NAME));
-            services.add(service);
+        for (SearchHit hit : response.getHits()) {
+            services.add(searchHitServiceFunction.apply(hit));
         }
-
         return services;
     }
 
-    private BoolQueryBuilder timeRangeQueryBuild(long startTimestamp, long endTimestamp) {
-        BoolQueryBuilder boolQuery1 = QueryBuilders.boolQuery();
-        boolQuery1.must().add(QueryBuilders.rangeQuery(RegisterSource.HEARTBEAT_TIME).gte(endTimestamp));
-        boolQuery1.must().add(QueryBuilders.rangeQuery(RegisterSource.REGISTER_TIME).lte(endTimestamp));
+    private List<ServiceInstance> buildInstances(SearchResponse response) {
+        List<ServiceInstance> serviceInstances = new ArrayList<>();
+        for (SearchHit searchHit : response.getHits()) {
+            serviceInstances.add(searchHitServiceInstanceFunction.apply(searchHit));
+        }
+        return serviceInstances;
+    }
 
-        BoolQueryBuilder boolQuery2 = QueryBuilders.boolQuery();
-        boolQuery2.must().add(QueryBuilders.rangeQuery(RegisterSource.REGISTER_TIME).lte(endTimestamp));
-        boolQuery2.must().add(QueryBuilders.rangeQuery(RegisterSource.HEARTBEAT_TIME).gte(startTimestamp));
+    private Process buildProcess(final SearchHit searchHit) {
+        Map<String, Object> sourceAsMap = searchHit.getSource();
 
-        BoolQueryBuilder timeBoolQuery = QueryBuilders.boolQuery();
-        timeBoolQuery.should().add(boolQuery1);
-        timeBoolQuery.should().add(boolQuery2);
+        final ProcessTraffic processTraffic =
+            new ProcessTraffic.Builder().storage2Entity(new ElasticSearchConverter.ToEntity(ProcessTraffic.INDEX_NAME, sourceAsMap));
 
-        return timeBoolQuery;
+        Process process = new Process();
+        process.setId(processTraffic.id().build());
+        process.setName(processTraffic.getName());
+        final String serviceId = processTraffic.getServiceId();
+        process.setServiceId(serviceId);
+        process.setServiceName(IDManager.ServiceID.analysisId(serviceId).getName());
+        final String instanceId = processTraffic.getInstanceId();
+        process.setInstanceId(instanceId);
+        process.setInstanceName(IDManager.ServiceInstanceID.analysisId(instanceId).getName());
+        process.setAgentId(processTraffic.getAgentId());
+        process.setDetectType(ProcessDetectType.valueOf(processTraffic.getDetectType()).name());
+        process.setProfilingSupportStatus(ProfilingSupportStatus.valueOf(processTraffic.getProfilingSupportStatus())
+                                                                .name());
+
+        JsonObject properties = processTraffic.getProperties();
+        if (properties != null) {
+            for (Map.Entry<String, JsonElement> property : properties.entrySet()) {
+                String key = property.getKey();
+                String value = property.getValue().getAsString();
+                process.getAttributes().add(new Attribute(key, value));
+            }
+        }
+        final String labelsJson = processTraffic.getLabelsJson();
+        if (StringUtils.isNotEmpty(labelsJson)) {
+            final List<String> labels = GSON.<List<String>>fromJson(labelsJson, ArrayList.class);
+            process.getLabels().addAll(labels);
+        }
+        return process;
+    }
+
+    /**
+     * When the index column use an alias, we should get it's real physical column name for query.
+     */
+    private void initColumnName() {
+        if (!aliasNameInit) {
+            this.endpointTrafficNameAlias = IndexController.LogicIndicesRegister.getPhysicalColumnName(EndpointTraffic.INDEX_NAME, EndpointTraffic.NAME);
+            aliasNameInit = true;
+        }
     }
 }

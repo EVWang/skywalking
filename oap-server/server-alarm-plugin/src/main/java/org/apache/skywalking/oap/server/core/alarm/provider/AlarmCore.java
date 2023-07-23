@@ -18,11 +18,6 @@
 
 package org.apache.skywalking.oap.server.core.alarm.provider;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.skywalking.oap.server.core.alarm.AlarmCallback;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
 import org.joda.time.LocalDateTime;
@@ -30,14 +25,18 @@ import org.joda.time.Minutes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
 /**
  * Alarm core includes metrics values in certain time windows based on alarm settings. By using its internal timer
- * trigger and the alarm rules to decides whether send the alarm to database and webhook(s)
- *
- * @author wusheng
+ * trigger and the alarm rules to decide whether send the alarm to database and webhook(s)
  */
 public class AlarmCore {
-    private static final Logger logger = LoggerFactory.getLogger(AlarmCore.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(AlarmCore.class);
 
     private LocalDateTime lastExecuteTime;
     private AlarmRulesWatcher alarmRulesWatcher;
@@ -55,10 +54,10 @@ public class AlarmCore {
         lastExecuteTime = now;
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
             try {
-                List<AlarmMessage> alarmMessageList = new ArrayList<>(30);
+                final List<AlarmMessage> alarmMessageList = new ArrayList<>(30);
                 LocalDateTime checkTime = LocalDateTime.now();
                 int minutes = Minutes.minutesBetween(lastExecuteTime, checkTime).getMinutes();
-                boolean[] hasExecute = new boolean[] {false};
+                boolean[] hasExecute = new boolean[]{false};
                 alarmRulesWatcher.getRunningContext().values().forEach(ruleList -> ruleList.forEach(runningRule -> {
                     if (minutes > 0) {
                         runningRule.moveTo(checkTime);
@@ -73,14 +72,23 @@ public class AlarmCore {
                 }));
                 // Set the last execute time, and make sure the second is `00`, such as: 18:30:00
                 if (hasExecute[0]) {
-                    lastExecuteTime = checkTime.minusSeconds(checkTime.getSecondOfMinute());
+                    lastExecuteTime = checkTime.withSecondOfMinute(0).withMillisOfSecond(0);
                 }
 
-                if (alarmMessageList.size() > 0) {
-                    allCallbacks.forEach(callback -> callback.doAlarm(alarmMessageList));
+                if (!alarmMessageList.isEmpty()) {
+                    if (!alarmRulesWatcher.getCompositeRules().isEmpty()) {
+                        List<AlarmMessage> messages = alarmRulesWatcher.getCompositeRuleEvaluator().evaluate(alarmRulesWatcher.getCompositeRules(), alarmMessageList);
+                        alarmMessageList.addAll(messages);
+                    }
+                    List<AlarmMessage> filteredMessages = alarmMessageList.stream().filter(msg -> !msg.isOnlyAsCondition()).collect(Collectors.toList());
+                    if (!filteredMessages.isEmpty()) {
+                        for (AlarmCallback callback : allCallbacks) {
+                            callback.doAlarm(filteredMessages);
+                        }
+                    }
                 }
             } catch (Exception e) {
-                logger.error(e.getMessage(), e);
+                LOGGER.error(e.getMessage(), e);
             }
         }, 10, 10, TimeUnit.SECONDS);
     }

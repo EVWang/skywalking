@@ -18,112 +18,202 @@
 
 package org.apache.skywalking.oap.server.cluster.plugin.kubernetes;
 
-import com.google.common.util.concurrent.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Supplier;
-import javax.annotation.Nullable;
+import io.fabric8.kubernetes.api.model.ObjectMeta;
+import io.fabric8.kubernetes.api.model.Pod;
+import io.fabric8.kubernetes.api.model.PodStatus;
+import io.fabric8.kubernetes.client.informers.ResourceEventHandler;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.oap.server.core.CoreModule;
-import org.apache.skywalking.oap.server.core.cluster.*;
+import org.apache.skywalking.oap.server.core.cluster.ClusterCoordinator;
+import org.apache.skywalking.oap.server.core.cluster.ClusterHealthStatus;
+import org.apache.skywalking.oap.server.core.cluster.OAPNodeChecker;
+import org.apache.skywalking.oap.server.core.cluster.RemoteInstance;
+import org.apache.skywalking.oap.server.core.cluster.ServiceQueryException;
+import org.apache.skywalking.oap.server.core.cluster.ServiceRegisterException;
 import org.apache.skywalking.oap.server.core.config.ConfigService;
 import org.apache.skywalking.oap.server.core.remote.client.Address;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
-import org.apache.skywalking.oap.server.telemetry.api.TelemetryRelatedContext;
-import org.slf4j.*;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
+import org.apache.skywalking.oap.server.telemetry.api.HealthCheckMetrics;
+import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
+import org.apache.skywalking.oap.server.telemetry.api.MetricsTag;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+import static org.apache.skywalking.oap.server.cluster.plugin.kubernetes.EventType.ADDED;
+import static org.apache.skywalking.oap.server.cluster.plugin.kubernetes.EventType.DELETED;
+import static org.apache.skywalking.oap.server.cluster.plugin.kubernetes.EventType.MODIFIED;
+
 
 /**
  * Read collector pod info from api-server of kubernetes, then using all containerIp list to construct the list of
  * {@link RemoteInstance}.
- *
- * @author gaohongtao
  */
-public class KubernetesCoordinator implements ClusterRegister, ClusterNodesQuery {
-
-    private static final Logger logger = LoggerFactory.getLogger(KubernetesCoordinator.class);
-
+@Slf4j
+public class KubernetesCoordinator extends ClusterCoordinator {
     private final ModuleDefineHolder manager;
-
     private final String uid;
-
-    private final Map<String, RemoteInstance> cache = new ConcurrentHashMap<>();
-
-    private final ReusableWatch<Event> watch;
-
     private volatile int port = -1;
+    private HealthCheckMetrics healthChecker;
+    private ClusterModuleKubernetesConfig config;
+    private final Map<String, RemoteInstance> remoteInstanceMap;
+    private volatile List<String> latestInstances;
 
-    KubernetesCoordinator(ModuleDefineHolder manager,
-        final ReusableWatch<Event> watch, final Supplier<String> uidSupplier) {
+    public KubernetesCoordinator(final ModuleDefineHolder manager,
+                                 final ClusterModuleKubernetesConfig config) {
+        this.uid = new UidEnvSupplier(config.getUidEnvName()).get();
         this.manager = manager;
-        this.watch = watch;
-        this.uid = uidSupplier.get();
-        TelemetryRelatedContext.INSTANCE.setId(uid);
+        this.config = config;
+        this.remoteInstanceMap = new ConcurrentHashMap<>(20);
+        this.latestInstances = new ArrayList<>(20);
     }
 
-    public void start() {
-        submitTask(MoreExecutors.listeningDecorator(Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
-            .setDaemon(true).setNameFormat("Kubernetes-ApiServer-%s").build())));
-    }
-
-    @Override public void registerRemote(RemoteInstance remoteInstance) throws ServiceRegisterException {
-        this.port = remoteInstance.getAddress().getPort();
-    }
-
-    private void submitTask(final ListeningExecutorService service) {
-        watch.initOrReset();
-        ListenableFuture<?> watchFuture = service.submit(newWatch());
-        Futures.addCallback(watchFuture, new FutureCallback<Object>() {
-            @Override public void onSuccess(@Nullable Object ignored) {
-                submitTask(service);
+    @Override
+    public List<RemoteInstance> queryRemoteNodes() {
+        try {
+            List<Pod> pods = NamespacedPodListInformer.INFORMER.listPods().orElseGet(this::selfPod);
+            if (log.isDebugEnabled()) {
+                List<String> uidList = pods
+                    .stream()
+                    .map(item -> item.getMetadata().getUid())
+                    .collect(Collectors.toList());
+                log.debug("[kubernetes cluster pods uid list]:{}", uidList);
             }
-
-            @Override public void onFailure(@Nullable Throwable throwable) {
-                logger.debug("Generate remote nodes error", throwable);
-                submitTask(service);
+            if (port == -1) {
+                port = manager.find(CoreModule.NAME).provider().getService(ConfigService.class).getGRPCPort();
             }
-        });
-    }
-
-    private Callable<Object> newWatch() {
-        return () -> {
-            generateRemoteNodes();
-            return null;
-        };
-    }
-
-    private void generateRemoteNodes() {
-        for (Event event : watch) {
-            if (event == null) {
-                break;
+            List<RemoteInstance> remoteInstances =
+                pods.stream()
+                    .filter(pod -> StringUtil.isNotBlank(pod.getStatus().getPodIP()))
+                    .map(pod -> new RemoteInstance(
+                        new Address(pod.getStatus().getPodIP(), port, pod.getMetadata().getUid().equals(uid))))
+                    .collect(Collectors.toList());
+            healthChecker.health();
+            this.latestInstances = remoteInstances.stream().map(it -> it.getAddress().toString()).collect(Collectors.toList());
+            if (log.isDebugEnabled()) {
+                remoteInstances.forEach(instance -> log.debug("kubernetes cluster instance: {}", instance));
             }
-            logger.debug("Received event {} {}-{}", event.getType(), event.getUid(), event.getHost());
-            switch (event.getType()) {
-                case "ADDED":
-                case "MODIFIED":
-                    cache.put(event.getUid(), new RemoteInstance(new Address(event.getHost(), port, event.getUid().equals(this.uid))));
-                    break;
-                case "DELETED":
-                    cache.remove(event.getUid());
-                    break;
-                default:
-                    throw new RuntimeException(String.format("Unknown event %s", event.getType()));
-            }
+            return remoteInstances;
+        } catch (Throwable e) {
+            healthChecker.unHealth(e);
+            throw new ServiceQueryException(e.getMessage());
         }
     }
 
-    @Override public List<RemoteInstance> queryRemoteNodes() {
-        final List<RemoteInstance> list = new ArrayList<>();
-        cache.values().forEach(instance -> {
-            Address address = instance.getAddress();
-            if (port == -1) {
-                logger.debug("Query kubernetes remote, port hasn't init, try to init");
-                ConfigService service = manager.find(CoreModule.NAME).provider().getService(ConfigService.class);
-                port = service.getGRPCPort();
-                logger.debug("Query kubernetes remote, port is set at {}", port);
-            }
-            list.add(new RemoteInstance(new Address(address.getHost(), port, address.isSelf())));
-        });
+    @Override
+    public void registerRemote(final RemoteInstance remoteInstance) throws ServiceRegisterException {
+        try {
+            this.port = remoteInstance.getAddress().getPort();
+            healthChecker.health();
+        } catch (Throwable e) {
+            healthChecker.unHealth(e);
+            throw new ServiceRegisterException(e.getMessage());
+        }
+    }
 
-        logger.debug("Query kubernetes remote nodes: {}", list);
-        return list;
+    private void initHealthChecker() {
+        if (healthChecker == null) {
+            MetricsCreator metricCreator = manager.find(TelemetryModule.NAME)
+                                                  .provider()
+                                                  .getService(MetricsCreator.class);
+            healthChecker = metricCreator.createHealthCheckerGauge(
+                "cluster_k8s", MetricsTag.EMPTY_KEY, MetricsTag.EMPTY_VALUE);
+        }
+    }
+
+    private List<Pod> selfPod() {
+        Pod v1Pod = new Pod();
+        v1Pod.setMetadata(new ObjectMeta());
+        v1Pod.setStatus(new PodStatus());
+        v1Pod.getMetadata().setUid(uid);
+        v1Pod.getStatus().setPodIP("127.0.0.1");
+        return Collections.singletonList(v1Pod);
+    }
+
+    @Override
+    public void start() {
+        initHealthChecker();
+        NamespacedPodListInformer.INFORMER.init(config, new K8sResourceEventHandler());
+    }
+
+    class K8sResourceEventHandler implements ResourceEventHandler<Pod> {
+
+        @Override
+        public void onAdd(final Pod obj) {
+            updateRemoteInstances(obj, ADDED);
+        }
+
+        @Override
+        public void onUpdate(final Pod oldObj, final Pod newObj) {
+            updateRemoteInstances(newObj, MODIFIED);
+        }
+
+        @Override
+        public void onDelete(final Pod obj, final boolean deletedFinalStateUnknown) {
+            updateRemoteInstances(obj, DELETED);
+        }
+    }
+
+    /**
+     * When a remote instance up/off line, will receive multi event according to the pod status.
+     * To avoid notify the watchers too frequency, here use a `remoteInstanceMap` to cache them.
+     * Only notify watchers once when the instances changed.
+     */
+    private void updateRemoteInstances(Pod pod, EventType event) {
+        try {
+            initHealthChecker();
+            if (StringUtil.isNotBlank(pod.getStatus().getPodIP())) {
+                if (port == -1) {
+                    port = manager.find(CoreModule.NAME).provider().getService(ConfigService.class).getGRPCPort();
+                }
+
+                RemoteInstance remoteInstance = new RemoteInstance(
+                    new Address(pod.getStatus().getPodIP(), this.port, pod.getMetadata().getUid().equals(uid)));
+                switch (event) {
+                    case ADDED:
+                    case MODIFIED:
+                        if ("Running".equalsIgnoreCase(pod.getStatus().getPhase())) {
+                            remoteInstanceMap.put(remoteInstance.getAddress().toString(), remoteInstance);
+                        } else if ("Terminating".equalsIgnoreCase(pod.getStatus().getPhase())) {
+                            remoteInstanceMap.remove(remoteInstance.getAddress().toString());
+                        }
+                        break;
+                    case DELETED:
+                        this.remoteInstanceMap.remove(remoteInstance.getAddress().toString());
+                        break;
+                    default:
+                        return;
+                }
+                updateRemoteInstances();
+            }
+        } catch (Throwable e) {
+            healthChecker.unHealth(e);
+            log.error("Failed to notify RemoteInstances update.", e);
+        }
+    }
+
+    private void updateRemoteInstances() {
+        List<String> updatedInstances = new ArrayList<>(this.remoteInstanceMap.keySet());
+        if (this.latestInstances.size() != updatedInstances.size() || !this.latestInstances.containsAll(updatedInstances)) {
+            List<RemoteInstance> remoteInstances = new ArrayList<>(this.remoteInstanceMap.values());
+            this.latestInstances = updatedInstances;
+            checkHealth(remoteInstances);
+            notifyWatchers(remoteInstances);
+        }
+    }
+
+    private void checkHealth(List<RemoteInstance> remoteInstances) {
+        ClusterHealthStatus healthStatus = OAPNodeChecker.isHealth(remoteInstances);
+        if (healthStatus.isHealth()) {
+            this.healthChecker.health();
+        } else {
+            this.healthChecker.unHealth(healthStatus.getReason());
+        }
     }
 }

@@ -19,27 +19,58 @@
 package org.apache.skywalking.oap.server.core.query;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
-import org.apache.skywalking.oap.server.core.CoreModule;
-import org.apache.skywalking.oap.server.core.cache.*;
-import org.apache.skywalking.oap.server.core.query.entity.*;
-import org.apache.skywalking.oap.server.core.register.*;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import lombok.SneakyThrows;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.skywalking.oap.server.core.Const;
+import org.apache.skywalking.oap.server.core.CoreModuleConfig;
+import org.apache.skywalking.oap.server.core.analysis.DownSampling;
+import org.apache.skywalking.oap.server.core.analysis.IDManager;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
+import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
+import org.apache.skywalking.oap.server.core.query.enumeration.ProfilingSupportStatus;
+import org.apache.skywalking.oap.server.core.query.input.Duration;
+import org.apache.skywalking.oap.server.core.query.type.Endpoint;
+import org.apache.skywalking.oap.server.core.query.type.EndpointInfo;
+import org.apache.skywalking.oap.server.core.query.type.Process;
+import org.apache.skywalking.oap.server.core.query.type.Service;
+import org.apache.skywalking.oap.server.core.query.type.ServiceInstance;
 import org.apache.skywalking.oap.server.core.storage.StorageModule;
 import org.apache.skywalking.oap.server.core.storage.query.IMetadataQueryDAO;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
+import org.apache.skywalking.oap.server.library.util.CollectionUtils;
 
-/**
- * @author peng-yongsheng
- */
 public class MetadataQueryService implements org.apache.skywalking.oap.server.library.module.Service {
 
     private final ModuleManager moduleManager;
+    private final LoadingCache<Boolean, Map<String, List<Service>>> serviceCache;
     private IMetadataQueryDAO metadataQueryDAO;
-    private ServiceInventoryCache serviceInventoryCache;
-    private EndpointInventoryCache endpointInventoryCache;
 
-    public MetadataQueryService(ModuleManager moduleManager) {
+    public MetadataQueryService(ModuleManager moduleManager, CoreModuleConfig moduleConfig) {
         this.moduleManager = moduleManager;
+
+        this.serviceCache = CacheBuilder.newBuilder()
+            .maximumSize(1)
+            .refreshAfterWrite(moduleConfig.getServiceCacheRefreshInterval(), TimeUnit.SECONDS)
+            .build(new CacheLoader<>() {
+                @Override
+                public Map<String, List<Service>> load(Boolean key) throws Exception {
+                    return mapAllServices();
+                }
+            });
     }
 
     private IMetadataQueryDAO getMetadataQueryDAO() {
@@ -49,65 +80,107 @@ public class MetadataQueryService implements org.apache.skywalking.oap.server.li
         return metadataQueryDAO;
     }
 
-    private ServiceInventoryCache getServiceInventoryCache() {
-        if (serviceInventoryCache == null) {
-            serviceInventoryCache = moduleManager.find(CoreModule.NAME).provider().getService(ServiceInventoryCache.class);
-        }
-        return serviceInventoryCache;
+    public Set<String> listLayers() throws IOException {
+        return Arrays.stream(Layer.values()).filter(layer -> layer.value() > 0).map(Layer::name).collect(Collectors.toSet());
     }
 
-    private EndpointInventoryCache getEndpointInventoryCache() {
-        if (endpointInventoryCache == null) {
-            endpointInventoryCache = moduleManager.find(CoreModule.NAME).provider().getService(EndpointInventoryCache.class);
-        }
-        return endpointInventoryCache;
+    @SneakyThrows
+    public List<Service> listServices(final String layer, final String group) throws IOException {
+        return this.combineServices(this.serviceCache.get(true).values().stream().flatMap(Collection::stream)
+            .filter(svc -> {
+                if (StringUtils.isNotEmpty(layer) && !svc.getLayers().contains(layer)) {
+                    return false;
+                }
+                return StringUtils.isEmpty(group) || Objects.equals(svc.getGroup(), group);
+            }).collect(Collectors.toList()));
     }
 
-    public ClusterBrief getGlobalBrief(final long startTimestamp, final long endTimestamp) throws IOException {
-        ClusterBrief clusterBrief = new ClusterBrief();
-        clusterBrief.setNumOfService(getMetadataQueryDAO().numOfService(startTimestamp, endTimestamp));
-        clusterBrief.setNumOfEndpoint(getMetadataQueryDAO().numOfEndpoint());
-        clusterBrief.setNumOfDatabase(getMetadataQueryDAO().numOfConjectural(NodeType.Database.value()));
-        clusterBrief.setNumOfCache(getMetadataQueryDAO().numOfConjectural(NodeType.Cache.value()));
-        clusterBrief.setNumOfMQ(getMetadataQueryDAO().numOfConjectural(NodeType.MQ.value()));
-        return clusterBrief;
+    @SneakyThrows
+    public Service getService(final String serviceId) throws IOException {
+        final List<Service> services = this.combineServices(this.serviceCache.get(true).get(serviceId));
+        return CollectionUtils.isNotEmpty(services) ? services.get(0) : null;
     }
 
-    public List<Service> getAllServices(final long startTimestamp, final long endTimestamp) throws IOException {
-        return getMetadataQueryDAO().getAllServices(startTimestamp, endTimestamp);
+    public ServiceInstance getInstance(final String instanceId) throws IOException {
+        return getMetadataQueryDAO().getInstance(instanceId);
     }
 
-    public List<Database> getAllDatabases() throws IOException {
-        return getMetadataQueryDAO().getAllDatabases();
+    public List<ServiceInstance> listInstances(final Duration duration,
+                                                     final String serviceId) throws IOException {
+        return getMetadataQueryDAO().listInstances(duration, serviceId)
+                                    .stream().distinct().collect(Collectors.toList());
     }
 
-    public List<Service> searchServices(final long startTimestamp, final long endTimestamp,
-        final String keyword) throws IOException {
-        return getMetadataQueryDAO().searchServices(startTimestamp, endTimestamp, keyword);
+    public List<Endpoint> findEndpoint(final String keyword, final String serviceId,
+                                       final int limit) throws IOException {
+        return getMetadataQueryDAO().findEndpoint(keyword, serviceId, limit)
+                                    .stream().distinct().collect(Collectors.toList());
     }
 
-    public List<ServiceInstance> getServiceInstances(final long startTimestamp, final long endTimestamp,
-        final String serviceId) throws IOException {
-        return getMetadataQueryDAO().getServiceInstances(startTimestamp, endTimestamp, serviceId);
-    }
-
-    public List<Endpoint> searchEndpoint(final String keyword, final String serviceId,
-        final int limit) throws IOException {
-        return getMetadataQueryDAO().searchEndpoint(keyword, serviceId, limit);
-    }
-
-    public Service searchService(final String serviceCode) throws IOException {
-        return getMetadataQueryDAO().searchService(serviceCode);
-    }
-
-    public EndpointInfo getEndpointInfo(final int endpointId) throws IOException {
-        EndpointInventory endpointInventory = getEndpointInventoryCache().get(endpointId);
+    public EndpointInfo getEndpointInfo(final String endpointId) throws IOException {
+        final IDManager.EndpointID.EndpointIDDefinition endpointIDDefinition = IDManager.EndpointID.analysisId(
+            endpointId);
+        final IDManager.ServiceID.ServiceIDDefinition serviceIDDefinition = IDManager.ServiceID.analysisId(
+            endpointIDDefinition.getServiceId());
 
         EndpointInfo endpointInfo = new EndpointInfo();
-        endpointInfo.setId(endpointInventory.getSequence());
-        endpointInfo.setName(endpointInventory.getName());
-        endpointInfo.setServiceId(endpointInventory.getServiceId());
-        endpointInfo.setServiceName(getServiceInventoryCache().get(endpointInventory.getServiceId()).getName());
+        endpointInfo.setId(endpointId);
+        endpointInfo.setName(endpointIDDefinition.getEndpointName());
+        endpointInfo.setServiceId(endpointIDDefinition.getServiceId());
+        endpointInfo.setServiceName(serviceIDDefinition.getName());
         return endpointInfo;
+    }
+
+    public List<Process> listProcesses(final Duration duration, final String instanceId) throws IOException {
+        if (duration.getEndTimeBucket() < duration.getStartTimeBucket()) {
+            return Collections.emptyList();
+        }
+        return getMetadataQueryDAO().listProcesses(instanceId, duration, true);
+    }
+
+    public Process getProcess(String processId) throws IOException {
+        if (StringUtils.isEmpty(processId)) {
+            return null;
+        }
+        return getMetadataQueryDAO().getProcess(processId);
+    }
+
+    public Long estimateProcessScale(String serviceId, List<String> labels) throws IOException {
+        if (StringUtils.isEmpty(serviceId)) {
+            return 0L;
+        }
+        final long endTimestamp = System.currentTimeMillis();
+        final long startTimestamp = endTimestamp - TimeUnit.MINUTES.toMillis(10);
+        final List<Process> processes = getMetadataQueryDAO().listProcesses(serviceId,
+                ProfilingSupportStatus.SUPPORT_EBPF_PROFILING, TimeBucket.getTimeBucket(startTimestamp, DownSampling.Minute),
+                TimeBucket.getTimeBucket(endTimestamp, DownSampling.Minute));
+        return CollectionUtils.isEmpty(processes) ?
+                0L :
+                processes.stream().filter(p -> p.getLabels().containsAll(labels)).count();
+    }
+
+    private Map<String, List<Service>> mapAllServices() throws Exception {
+        final List<Service> services = getMetadataQueryDAO().listServices();
+        return services.stream().peek(service -> {
+            if (service.getGroup() == null) {
+                service.setGroup(Const.EMPTY_STRING);
+            }
+        }).collect(Collectors.toMap(Service::getId, s -> new ArrayList<>(List.of(s)), (s1, s2) -> {
+            s1.addAll(s2);
+            return s1;
+        }));
+    }
+
+    private List<Service> combineServices(List<Service> services) {
+        if (CollectionUtils.isEmpty(services)) {
+            return Collections.emptyList();
+        }
+        return new ArrayList<>(services.stream()
+                                       .collect(Collectors.toMap(Service::getName, service -> service,
+                                                                 (s1, s2) -> {
+                                                                     s1.getLayers().addAll(s2.getLayers());
+                                                                     return s1;
+                                                                 }
+                                       )).values());
     }
 }

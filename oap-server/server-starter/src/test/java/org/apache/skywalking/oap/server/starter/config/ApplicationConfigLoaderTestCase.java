@@ -19,34 +19,68 @@
 package org.apache.skywalking.oap.server.starter.config;
 
 import org.apache.skywalking.oap.server.library.module.ApplicationConfiguration;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Properties;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * @author panjuan
- */
 public class ApplicationConfigLoaderTestCase {
-    
+
     private ApplicationConfiguration applicationConfiguration;
-    
-    @Before
+
+    @BeforeEach
     public void setUp() throws ConfigFileNotFoundException {
+        System.setProperty("SW_STORAGE", "mysql");
+        System.setProperty("SW_RECEIVER_ZIPKIN", "default");
+        System.setProperty("SW_DATA_SOURCE_PASSWORD", "!AI!3B");
         ApplicationConfigLoader configLoader = new ApplicationConfigLoader();
         applicationConfiguration = configLoader.load();
     }
 
     @Test
     public void testLoadConfig() {
-        Properties providerConfig = applicationConfiguration.getModuleConfiguration("storage").getProviderConfiguration("mysql");
-        assertThat(providerConfig.get("metadataQueryMaxSize"), is(5000));
-        assertThat(providerConfig.get("properties"), instanceOf(Properties.class));
+        Properties providerConfig = applicationConfiguration.getModuleConfiguration("storage")
+                                                            .getProviderConfiguration("mysql");
+        assertThat(providerConfig.get("metadataQueryMaxSize")).isEqualTo(5000);
+        assertThat(providerConfig.get("properties")).isInstanceOf(Properties.class);
         Properties properties = (Properties) providerConfig.get("properties");
-        assertThat(properties.get("jdbcUrl"), is("jdbc:mysql://localhost:3306/swtest"));
+        assertThat(properties.get("jdbcUrl")).isEqualTo("jdbc:mysql://localhost:3306/swtest?rewriteBatchedStatements=true&allowMultiQueries=true");
     }
+
+    @Test
+    public void testLoadStringTypeConfig() {
+        Properties providerConfig = applicationConfiguration.getModuleConfiguration("receiver-zipkin")
+                .getProviderConfiguration("default");
+        String host = (String) providerConfig.get("restHost");
+        assertEquals("0.0.0.0", host);
+    }
+
+    @Test
+    public void testLoadIntegerTypeConfig() {
+        Properties providerConfig = applicationConfiguration.getModuleConfiguration("receiver-zipkin")
+                .getProviderConfiguration("default");
+        Integer port = (Integer) providerConfig.get("restPort");
+        assertEquals(Integer.valueOf(9411), port);
+    }
+
+    @Test
+    public void testLoadBooleanTypeConfig() {
+        Properties providerConfig = applicationConfiguration.getModuleConfiguration("core")
+                .getProviderConfiguration("default");
+        Boolean enableDataKeeperExecutor = (Boolean) providerConfig.get("enableDataKeeperExecutor");
+        assertEquals(Boolean.TRUE, enableDataKeeperExecutor);
+    }
+
+    @Test
+    public void testLoadSpecialStringTypeConfig() {
+        Properties providerConfig = applicationConfiguration.getModuleConfiguration("storage")
+                .getProviderConfiguration("mysql");
+        Properties properties = (Properties) providerConfig.get("properties");
+        String password = (String) properties.get("dataSource.password");
+        assertEquals("!AI!3B", password);
+    }
+
 }

@@ -18,59 +18,71 @@
 
 package org.apache.skywalking.oap.server.telemetry.prometheus;
 
-import io.prometheus.client.exporter.HTTPServer;
-import io.prometheus.client.hotspot.*;
-import java.io.IOException;
-import org.apache.skywalking.oap.server.library.module.*;
+import io.prometheus.client.hotspot.DefaultExports;
+import org.apache.skywalking.oap.server.library.module.ModuleDefine;
+import org.apache.skywalking.oap.server.library.module.ModuleProvider;
+import org.apache.skywalking.oap.server.library.module.ModuleStartException;
+import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsCollector;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
-import org.apache.skywalking.oap.server.telemetry.none.MetricsCollectorNoop;
+import org.apache.skywalking.oap.server.telemetry.prometheus.httpserver.HttpServer;
 
 /**
  * Start the Prometheus
- *
- * @author wusheng
  */
 public class PrometheusTelemetryProvider extends ModuleProvider {
     private PrometheusConfig config;
 
-    public PrometheusTelemetryProvider() {
-        config = new PrometheusConfig();
-    }
-
-    @Override public String name() {
+    @Override
+    public String name() {
         return "prometheus";
     }
 
-    @Override public Class<? extends ModuleDefine> module() {
+    @Override
+    public Class<? extends ModuleDefine> module() {
         return TelemetryModule.class;
     }
 
-    @Override public ModuleConfig createConfigBeanIfAbsent() {
-        return config;
+    @Override
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<PrometheusConfig>() {
+            @Override
+            public Class type() {
+                return PrometheusConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final PrometheusConfig initialized) {
+                config = initialized;
+            }
+        };
     }
 
-    @Override public void prepare() throws ServiceNotProvidedException, ModuleStartException {
+    @Override
+    public void prepare() throws ServiceNotProvidedException, ModuleStartException {
         this.registerServiceImplementation(MetricsCreator.class, new PrometheusMetricsCreator());
-        this.registerServiceImplementation(MetricsCollector.class, new MetricsCollectorNoop());
+        this.registerServiceImplementation(MetricsCollector.class, new PrometheusMetricsCollector());
         try {
-            new HTTPServer(config.getHost(), config.getPort());
-        } catch (IOException e) {
+            new HttpServer(config).start();
+        } catch (InterruptedException e) {
             throw new ModuleStartException(e.getMessage(), e);
         }
 
         DefaultExports.initialize();
     }
 
-    @Override public void start() throws ServiceNotProvidedException, ModuleStartException {
+    @Override
+    public void start() throws ServiceNotProvidedException, ModuleStartException {
 
     }
 
-    @Override public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
+    @Override
+    public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
     }
 
-    @Override public String[] requiredModules() {
+    @Override
+    public String[] requiredModules() {
         return new String[0];
     }
 }

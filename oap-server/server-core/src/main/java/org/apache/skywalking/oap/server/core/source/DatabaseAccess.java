@@ -18,14 +18,14 @@
 
 package org.apache.skywalking.oap.server.core.source;
 
-import lombok.*;
+import lombok.Getter;
+import lombok.Setter;
+import org.apache.skywalking.oap.server.core.analysis.IDManager;
 
 import static org.apache.skywalking.oap.server.core.source.DefaultScopeDefine.DATABASE_ACCESS;
+import static org.apache.skywalking.oap.server.core.source.DefaultScopeDefine.SERVICE_CATALOG_NAME;
 
-/**
- * @author: liuhaoyang
- */
-@ScopeDeclaration(id = DATABASE_ACCESS, name = "DatabaseAccess")
+@ScopeDeclaration(id = DATABASE_ACCESS, name = "DatabaseAccess", catalog = SERVICE_CATALOG_NAME)
 @ScopeDefaultColumn.VirtualColumnDefinition(fieldName = "entityId", columnName = "entity_id", isID = true, type = String.class)
 public class DatabaseAccess extends Source {
 
@@ -36,12 +36,25 @@ public class DatabaseAccess extends Source {
 
     @Override
     public String getEntityId() {
-        return String.valueOf(id);
+        if (entityId == null) {
+            entityId = IDManager.ServiceID.buildId(name, false);
+        }
+        return entityId;
     }
 
-    @Getter @Setter private long id;
-    @Getter @Setter private String name;
-    @Getter @Setter private int databaseTypeId;
-    @Getter @Setter private int latency;
-    @Getter @Setter private boolean status;
+    private String entityId;
+
+    @Getter
+    @Setter
+    @ScopeDefaultColumn.DefinedByField(columnName = "name", requireDynamicActive = true)
+    private String name;
+    @Getter
+    @Setter
+    private int databaseTypeId;
+    @Getter
+    @Setter
+    private int latency;
+    @Getter
+    @Setter
+    private boolean status;
 }
